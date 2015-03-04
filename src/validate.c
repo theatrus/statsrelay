@@ -155,7 +155,12 @@ int validate_carbon(const char *line, size_t len) {
 	}
 
 	if (strnstr(line, "..", len) != NULL) {
-		stats_log("validate: found invalid carbon line with ..");
+		stats_log("validate: found carbon line with invalid sequence \"..\"");
+		return 1;
+	}
+
+	if (strnstr(line, "/", len) != NULL) {
+		stats_log("validate: found carbon line with invalid character /");
 		return 1;
 	}
 
