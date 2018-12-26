@@ -174,23 +174,37 @@ static int hashmap_insert_table(hashmap_entry *table,
         entry = entry->next;
     }
 
+    if (entry == NULL && last_entry == NULL) {
+        return -1;
+    }
+
+    // We already know the key length - no point using strdup
+    char *insert_key = malloc(key_len + 1);
+    if (insert_key == NULL) {
+        return -1; // WARN (CEV): handle OOM
+    }
+    memcpy(insert_key, key, key_len + 1);
+
     // If last entry is NULL, we can just insert directly into the
     // table slot since it is empty
-    if (entry && last_entry == NULL) {
-        entry->key = strdup(key);
+    if (last_entry == NULL) {
+        entry->key = insert_key;
         entry->value = value;
         entry->metadata = metadata;
         entry->next = NULL;
-        // We have a last value, need to link against it with our new
-        // value.
-    } else if (last_entry) {
+
+    // We have a last value, need to link against it with our new
+    // value.
+    } else {
         entry = calloc(1, sizeof(hashmap_entry));
-        entry->key = strdup(key);
+        if (entry == NULL) {
+            free(insert_key);
+            return -1; // WARN (CEV): handle OOM
+        }
+        entry->key = insert_key;
         entry->value = value;
         entry->metadata = metadata;
         last_entry->next = entry;
-    } else {
-        return -1;
     }
     return 1;
 }
