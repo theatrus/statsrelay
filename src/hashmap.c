@@ -144,8 +144,13 @@ int hashmap_get(hashmap *map, const char *key, void **value) {
  * @arg should_cmp Should keys be compared to existing ones.
  * @return 1 if the key is new, 0 if updated.
  */
-static int hashmap_insert_table(hashmap_entry *table, int table_size, char *key, int key_len,
-                                void *value, void *metadata, int should_cmp) {
+static int hashmap_insert_table(hashmap_entry *table,
+        int table_size,
+        const char *key,
+        int key_len,
+        void *value,
+        void *metadata,
+        int should_cmp) {
     // Compute the hash value of the key
     uint32_t out = murmur3_32(key, key_len, 0);
 
@@ -172,7 +177,7 @@ static int hashmap_insert_table(hashmap_entry *table, int table_size, char *key,
     // If last entry is NULL, we can just insert directly into the
     // table slot since it is empty
     if (entry && last_entry == NULL) {
-        entry->key = (key);
+        entry->key = strdup(key);
         entry->value = value;
         entry->metadata = metadata;
         entry->next = NULL;
@@ -180,7 +185,7 @@ static int hashmap_insert_table(hashmap_entry *table, int table_size, char *key,
         // value.
     } else if (last_entry) {
         entry = calloc(1, sizeof(hashmap_entry));
-        entry->key = (key);
+        entry->key = strdup(key);
         entry->value = value;
         entry->metadata = metadata;
         last_entry->next = entry;
@@ -254,16 +259,12 @@ int hashmap_put(hashmap *map, const char *key, void *value, void *metadata) {
         return hashmap_put(map, key, value, metadata);
     }
 
-    char* insert_key = strdup(key);
-
     // Insert into the map, comparing keys and duplicating keys
-    int new = hashmap_insert_table(map->table, map->table_size, insert_key, strlen(key), value, metadata, 1);
+    int new = hashmap_insert_table(map->table, map->table_size, key,
+                                   strlen(key), value, metadata, 1);
     if (new > 0) {
         map->count += 1;
-    } else {
-        free(insert_key);
     }
-
     return new;
 }
 
