@@ -8,6 +8,7 @@
 
 // Basic hash entry.
 typedef struct hashmap_entry {
+    size_t key_len;
     char *key;
     void *value;
     void *metadata;
@@ -102,6 +103,14 @@ int hashmap_size(hashmap *map) {
 }
 
 /**
+ * Returns if key equals the hashmap entry key.
+ */
+static inline int hashmap_keys_equal(const hashmap_entry *entry, const char *key,
+                                     size_t key_len) {
+    return entry->key_len == key_len && memcmp(entry->key, key, key_len) == 0;
+}
+
+/**
  * Gets a value.
  * @arg key The key to look for
  * @arg key_len The key length
@@ -110,7 +119,8 @@ int hashmap_size(hashmap *map) {
  */
 int hashmap_get(hashmap *map, const char *key, void **value) {
     // Compute the hash value of the key
-    uint32_t out = murmur3_32(key, strlen(key), 0);
+    const size_t key_len = strlen(key);
+    uint32_t out = murmur3_32(key, key_len, 0);
 
     unsigned int index = out % map->table_size;
 
@@ -120,7 +130,7 @@ int hashmap_get(hashmap *map, const char *key, void **value) {
     // Scan the keys
     while (entry && entry->key) {
         // Found it
-        if (strcmp(entry->key, key) == 0) {
+        if (hashmap_keys_equal(entry, key, key_len)) {
             *value = entry->value;
             return 0;
         }
@@ -164,7 +174,7 @@ static int hashmap_insert_table(hashmap_entry *table,
     // Scan the keys
     while (entry && entry->key) {
         // Found it, update the value
-        if (should_cmp && (strcmp(entry->key, key) == 0)) {
+        if (should_cmp && hashmap_keys_equal(entry, key, key_len)) {
             entry->value = value;
             return 0;
         }
@@ -188,6 +198,7 @@ static int hashmap_insert_table(hashmap_entry *table,
     // If last entry is NULL, we can just insert directly into the
     // table slot since it is empty
     if (last_entry == NULL) {
+        entry->key_len = key_len;
         entry->key = insert_key;
         entry->value = value;
         entry->metadata = metadata;
@@ -201,6 +212,7 @@ static int hashmap_insert_table(hashmap_entry *table,
             free(insert_key);
             return -1; // WARN (CEV): handle OOM
         }
+        entry->key_len = key_len;
         entry->key = insert_key;
         entry->value = value;
         entry->metadata = metadata;
@@ -290,7 +302,8 @@ int hashmap_put(hashmap *map, const char *key, void *value, void *metadata) {
  */
 int hashmap_delete(hashmap *map, const char *key) {
     // Compute the hash value of the key
-    uint32_t out = murmur3_32(key, strlen(key), 0);
+    const size_t key_len = strlen(key);
+    uint32_t out = murmur3_32(key, key_len, 0);
 
     // Mod the lower 64bits of the hash function with the table
     // size to get the index
@@ -303,7 +316,7 @@ int hashmap_delete(hashmap *map, const char *key) {
     // Scan the keys
     while (entry && entry->key) {
         // Found it
-        if (strcmp(entry->key, key) == 0) {
+        if (hashmap_keys_equal(entry, key, key_len)) {
             // Free the key
             free(entry->key);
             map->count -= 1;
@@ -313,6 +326,7 @@ int hashmap_delete(hashmap *map, const char *key) {
                 // Copy the keys from the node, and free it
                 if (entry->next) {
                     hashmap_entry *n = entry->next;
+                    entry->key_len = n->key_len;
                     entry->key = n->key;
                     entry->value = n->value;
                     entry->next = n->next;
@@ -321,6 +335,7 @@ int hashmap_delete(hashmap *map, const char *key) {
 
                     // Zero everything out
                 } else {
+                    entry->key_len = 0;
                     entry->key = NULL;
                     entry->value = NULL;
                     entry->next = NULL;
