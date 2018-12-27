@@ -102,6 +102,21 @@ int hashmap_size(hashmap *map) {
     return map->count;
 }
 
+// TODO (CEV):
+//  1. Make sure there are no type conversion issues (int vs. uint)
+//  2. Make sure this is inlined
+//  3. Consider using a macro
+//  4. Rename
+/**
+ * Returns the hash entry for key.
+ */
+static hashmap_entry *hashmap_lookup(hashmap_entry *table, int table_size,
+                                     const char *key, size_t key_len) {
+    // Mod the lower 64bits of the hash function with the table
+    // size to get the index
+    return table + (uint32_t)(murmur3_32(key, key_len, 0) % table_size);
+}
+
 /**
  * Returns if key equals the hashmap entry key.
  */
@@ -120,12 +135,7 @@ static inline int hashmap_keys_equal(const hashmap_entry *entry, const char *key
 int hashmap_get(hashmap *map, const char *key, void **value) {
     // Compute the hash value of the key
     const size_t key_len = strlen(key);
-    uint32_t out = murmur3_32(key, key_len, 0);
-
-    unsigned int index = out % map->table_size;
-
-    // Look for an entry
-    hashmap_entry *entry = map->table + index;
+    hashmap_entry *entry = hashmap_lookup(map->table, map->table_size, key, key_len);
 
     // Scan the keys
     while (entry && entry->key) {
@@ -161,13 +171,8 @@ static int hashmap_insert_table(hashmap_entry *table,
         void *value,
         void *metadata,
         int should_cmp) {
-    // Compute the hash value of the key
-    uint32_t out = murmur3_32(key, key_len, 0);
-
-    unsigned int index = out % table_size;
-
     // Look for an entry
-    hashmap_entry *entry = table + index;
+    hashmap_entry *entry = hashmap_lookup(table, table_size, key, key_len);
     // last_entry governs if we saw any nodes with keys
     hashmap_entry *last_entry = NULL;
 
@@ -303,14 +308,7 @@ int hashmap_put(hashmap *map, const char *key, void *value, void *metadata) {
 int hashmap_delete(hashmap *map, const char *key) {
     // Compute the hash value of the key
     const size_t key_len = strlen(key);
-    uint32_t out = murmur3_32(key, key_len, 0);
-
-    // Mod the lower 64bits of the hash function with the table
-    // size to get the index
-    unsigned int index = out % map->table_size;
-
-    // Look for an entry
-    hashmap_entry *entry = map->table + index;
+    hashmap_entry *entry = hashmap_lookup(map->table, map->table_size, key, key_len);
     hashmap_entry *last_entry = NULL;
 
     // Scan the keys
