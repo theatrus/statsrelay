@@ -20,6 +20,19 @@ static const int valid_stat_types_len = 6;
 // (http://manpages.ubuntu.com/manpages/xenial/man3/memchr.3.html)
 extern void *memrchr(const void*, int, size_t);
 
+static metric_type parse_stat_type(const char *str, size_t len) {
+    if (1 <= len && len <= 2) {
+        for (int i = 0; i < valid_stat_types_len; i++) {
+            const char *stat = valid_stat_types[i];
+            size_t slen = strlen(stat);
+            if (slen == len && memcmp(stat, str, slen) == 0) {
+                return (metric_type)i;
+            }
+        }
+    }
+    return METRIC_UNKNOWN;
+}
+
 int validate_statsd(const char *line, size_t len, validate_parsed_result_t* result) {
     size_t plen;
     char c;
@@ -76,19 +89,8 @@ int validate_statsd(const char *line, size_t len, validate_parsed_result_t* resu
         plen = end - start;
     }
 
-    valid = 0;
-    for (i = 0; i < valid_stat_types_len; i++) {
-        if (strlen(valid_stat_types[i]) != plen) {
-            continue;
-        }
-        if (strncmp(start, valid_stat_types[i], plen) == 0) {
-            result->type = (metric_type)i; /* The indexes match the enum values in the comparison list */
-            valid = 1;
-            break;
-        }
-    }
-
-    if (valid == 0) {
+    result->type = parse_stat_type(start, plen);
+    if (result->type < 0) {
         stats_log("validate: Invalid line \"%.*s\" unknown stat type \"%.*s\"", len, line, plen, start);
         goto statsd_err;
     }
