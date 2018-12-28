@@ -4,7 +4,7 @@
 
 #include <string.h>
 
-static char *valid_stat_types[6] = {
+static const char * const valid_stat_types[6] = {
     "c",
     "ms",
     "kv",
@@ -12,7 +12,7 @@ static char *valid_stat_types[6] = {
     "h",
     "s"
 };
-static size_t valid_stat_types_len = 6;
+static const int valid_stat_types_len = 6;
 
 // For some reason this is not in string.h, probably because it was introduced
 // there by a GNU extention:
