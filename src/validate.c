@@ -34,55 +34,38 @@ static metric_type parse_stat_type(const char *str, size_t len) {
 }
 
 int validate_statsd(const char *line, size_t len, validate_parsed_result_t* result) {
-    size_t plen;
-    char c;
-    int i, valid;
+    const char *start = line;
+    size_t plen = len;
 
-    // FIXME: this is dumb, don't do a memory copy
-    char *line_copy = strndup(line, len);
-    char *start, *end;
-    char *err;
-
-    if (line_copy == NULL) {
-        stats_log("validate: allocation failure. marking invalid line");
-        goto statsd_err;
-    }
-
-    start = line_copy;
-    plen = len;
     // Search backwards, otherwise might eat up irrelevant data.
     // Example: keyname.__tagname=tag:value:42.0|ms
     //                                      ^^^^--- actual value
-    end = memrchr(start, ':', plen);
+    const char *end = memrchr(start, ':', plen);
     if (end == NULL) {
         stats_log("validate: Invalid line \"%.*s\" missing ':'", len, line);
-        goto statsd_err;
+        return 1;
     }
-
     if ((end - start) < 1) {
         stats_log("validate: Invalid line \"%.*s\" zero length key", len, line);
-        goto statsd_err;
+        return 1;
     }
-
     start = end + 1;
-    plen = len - (start - line_copy);
+    plen = len - (start - line);
 
-    result->presampling_value = 1.0; /* Default pre-sampling to 1.0 */
-
+    char *err;
     result->value = strtod(start, &err);
     if (result->value == 0 && err == start) {
         stats_log("validate: Invalid line \"%.*s\" unable to parse value as double", len, line);
-        goto statsd_err;
+        return 1;
     }
 
     end = memchr(start, '|', plen);
     if (end == NULL) {
         stats_log("validate: Invalid line \"%.*s\" missing '|'", len, line);
-        goto statsd_err;
+        return 1;
     }
-
     start = end + 1;
-    plen = len - (start - line_copy);
+    plen = len - (start - line);
 
     end = memchr(start, '|', plen);
     if (end != NULL) {
@@ -92,34 +75,31 @@ int validate_statsd(const char *line, size_t len, validate_parsed_result_t* resu
     result->type = parse_stat_type(start, plen);
     if (result->type < 0) {
         stats_log("validate: Invalid line \"%.*s\" unknown stat type \"%.*s\"", len, line, plen, start);
-        goto statsd_err;
+        return 1;
     }
+
+    result->presampling_value = 1.0; /* Default pre-sampling to 1.0 */
 
     if (end != NULL) {
         // end[0] is currently the second | char
         // test if we have at least 1 char following it (@)
-        if ((len - (end - line_copy) > 1) && (end[1] == '@')) {
+        if ((len - (end - line) > 1) && (end[1] == '@')) {
             start = end + 2;
-            plen = len - (start - line_copy);
+            plen = len - (start - line);
             if (plen == 0) {
                 stats_log("validate: Invalid line \"%.*s\" @ sample with no rate", len, line);
-                goto statsd_err;
+                return 1;
             }
             result->presampling_value = strtod(start, &err);
             if ((result->presampling_value == 0.0) && err == start) {
                 stats_log("validate: Invalid line \"%.*s\" invalid sample rate", len, line);
-                goto statsd_err;
+                return 1;
             }
         } else {
             stats_log("validate: Invalid line \"%.*s\" no @ sample rate specifier", len, line);
-            goto statsd_err;
+            return 1;
         }
     }
 
-    free(line_copy);
     return 0;
-
-statsd_err:
-    free(line_copy);
-    return 1;
 }

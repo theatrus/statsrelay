@@ -27,12 +27,31 @@ void test_parse_presampling_value() {
     assert(METRIC_TIMER == result.type);
 }
 
+void test_line_not_modified() {
+    const char *lines[] = {
+        "a.b.c.__tag1=v1.__tag2=v2:v2:42.000|ms",
+        "test.srv.req:2.5|ms|@0.2",
+    };
+    const int lines_len = sizeof(lines) / sizeof(char *);
+
+    for (int i = 0; i < lines_len; i++) {
+        const char *line = lines[i];
+        const char *copy = strdup(line);
+
+        validate_parsed_result_t result;
+        assert(validate_statsd(line, strlen(line), &result) == 0);
+        assert(strcmp(line, copy) == 0);
+    }
+}
+
 int main() {
     stats_log_verbose(1);
 
     test_validate_stat();
 
-	test_parse_presampling_value();
+    test_parse_presampling_value();
+
+    test_line_not_modified();
 
     return 0;
 }
