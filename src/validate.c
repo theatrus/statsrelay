@@ -54,15 +54,13 @@ int validate_statsd(const char *line, size_t len, validate_parsed_result_t* resu
     start = end + 1;
     plen = len - (start - line_copy);
 
-    c = end[0];
-    end[0] = '\0';
     result->presampling_value = 1.0; /* Default pre-sampling to 1.0 */
+
     result->value = strtod(start, &err);
-    if ((result->value == 0.0) && (err == start)) {
+    if (result->value == 0 && err == start) {
         stats_log("validate: Invalid line \"%.*s\" unable to parse value as double", len, line);
         goto statsd_err;
     }
-    end[0] = c;
 
     end = memchr(start, '|', plen);
     if (end == NULL) {
@@ -75,8 +73,6 @@ int validate_statsd(const char *line, size_t len, validate_parsed_result_t* resu
 
     end = memchr(start, '|', plen);
     if (end != NULL) {
-        c = end[0];
-        end[0] = '\0';
         plen = end - start;
     }
 
@@ -98,7 +94,6 @@ int validate_statsd(const char *line, size_t len, validate_parsed_result_t* resu
     }
 
     if (end != NULL) {
-        end[0] = c;
         // end[0] is currently the second | char
         // test if we have at least 1 char following it (@)
         if ((len - (end - line_copy) > 1) && (end[1] == '@')) {
