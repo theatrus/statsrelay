@@ -24,8 +24,8 @@ static metric_type parse_stat_type(const char *str, size_t len) {
     if (1 <= len && len <= 2) {
         for (int i = 0; i < valid_stat_types_len; i++) {
             const char *stat = valid_stat_types[i];
-            size_t slen = strlen(stat);
-            if (slen == len && memcmp(stat, str, slen) == 0) {
+            // len is bounded, so help the the compiler optimize
+            if ((len == 1 ? memcmp(stat, str, 1) : memcmp(stat, str, 2)) == 0) {
                 return (metric_type)i;
             }
         }
