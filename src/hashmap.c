@@ -102,11 +102,6 @@ int hashmap_size(hashmap *map) {
     return map->count;
 }
 
-// TODO (CEV):
-//  1. Make sure there are no type conversion issues (int vs. uint)
-//  2. Make sure this is inlined
-//  3. Consider using a macro
-//  4. Rename
 /**
  * Returns the hash entry for key.
  */
@@ -196,7 +191,7 @@ static int hashmap_insert_table(hashmap_entry *table,
     // We already know the key length - no point using strdup
     char *insert_key = malloc(key_len + 1);
     if (insert_key == NULL) {
-        return -1; // WARN (CEV): handle OOM
+        return -1;
     }
     memcpy(insert_key, key, key_len + 1);
 
@@ -215,7 +210,7 @@ static int hashmap_insert_table(hashmap_entry *table,
         entry = calloc(1, sizeof(hashmap_entry));
         if (entry == NULL) {
             free(insert_key);
-            return -1; // WARN (CEV): handle OOM
+            return -1;
         }
         entry->key_len = key_len;
         entry->key = insert_key;
