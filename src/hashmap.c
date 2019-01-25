@@ -144,8 +144,13 @@ int hashmap_get(hashmap *map, const char *key, void **value) {
  * @arg should_cmp Should keys be compared to existing ones.
  * @return 1 if the key is new, 0 if updated.
  */
-static int hashmap_insert_table(hashmap_entry *table, int table_size, char *key, int key_len,
-                                void *value, void *metadata, int should_cmp) {
+static int hashmap_insert_table(hashmap_entry *table,
+        int table_size,
+        const char *key,
+        int key_len,
+        void *value,
+        void *metadata,
+        int should_cmp) {
     // Compute the hash value of the key
     uint32_t out = murmur3_32(key, key_len, 0);
 
@@ -169,23 +174,37 @@ static int hashmap_insert_table(hashmap_entry *table, int table_size, char *key,
         entry = entry->next;
     }
 
+    if (entry == NULL && last_entry == NULL) {
+        return -1;
+    }
+
+    // We already know the key length - no point using strdup
+    char *insert_key = malloc(key_len + 1);
+    if (insert_key == NULL) {
+        return -1; // WARN (CEV): handle OOM
+    }
+    memcpy(insert_key, key, key_len + 1);
+
     // If last entry is NULL, we can just insert directly into the
     // table slot since it is empty
-    if (entry && last_entry == NULL) {
-        entry->key = (key);
+    if (last_entry == NULL) {
+        entry->key = insert_key;
         entry->value = value;
         entry->metadata = metadata;
         entry->next = NULL;
-        // We have a last value, need to link against it with our new
-        // value.
-    } else if (last_entry) {
+
+    // We have a last value, need to link against it with our new
+    // value.
+    } else {
         entry = calloc(1, sizeof(hashmap_entry));
-        entry->key = (key);
+        if (entry == NULL) {
+            free(insert_key);
+            return -1; // WARN (CEV): handle OOM
+        }
+        entry->key = insert_key;
         entry->value = value;
         entry->metadata = metadata;
         last_entry->next = entry;
-    } else {
-        return -1;
     }
     return 1;
 }
@@ -254,16 +273,12 @@ int hashmap_put(hashmap *map, const char *key, void *value, void *metadata) {
         return hashmap_put(map, key, value, metadata);
     }
 
-    char* insert_key = strdup(key);
-
     // Insert into the map, comparing keys and duplicating keys
-    int new = hashmap_insert_table(map->table, map->table_size, insert_key, strlen(key), value, metadata, 1);
+    int new = hashmap_insert_table(map->table, map->table_size, key,
+                                   strlen(key), value, metadata, 1);
     if (new > 0) {
         map->count += 1;
-    } else {
-        free(insert_key);
     }
-
     return new;
 }
 
