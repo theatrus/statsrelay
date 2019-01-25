@@ -26,7 +26,11 @@ void stats_set_log_level(enum statsrelay_log_level level) {
     g_level = level;
 }
 
-void stats_vlog(const char *prefix,
+enum statsrelay_log_level stats_get_log_level() {
+    return g_level;
+}
+
+static void stats_vlog(const char *prefix,
         const char *format,
         va_list ap) {
     int fmt_len;
@@ -109,7 +113,7 @@ alloc_failure:
     return;
 }
 
-void stats_debug_log(const char *format, ...) {
+void noinline stats_debug_log_impl(const char *format, ...) {
     if (g_level <= STATSRELAY_LOG_DEBUG) {
         va_list args;
         va_start(args, format);
@@ -118,7 +122,7 @@ void stats_debug_log(const char *format, ...) {
     }
 }
 
-void stats_log(const char *format, ...) {
+void stats_log_impl(const char *format, ...) {
     if (g_level <= STATSRELAY_LOG_INFO) {
         va_list args;
         va_start(args, format);
@@ -127,7 +131,7 @@ void stats_log(const char *format, ...) {
     }
 }
 
-void stats_error_log(const char *format, ...) {
+void stats_error_log_impl(const char *format, ...) {
     if (g_level <= STATSRELAY_LOG_ERROR) {
         bool orig_verbose = g_verbose;
         g_verbose = true;
