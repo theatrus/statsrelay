@@ -15,8 +15,6 @@ enum statsrelay_log_level {
     STATSRELAY_LOG_ERROR   = 40
 };
 
-// TODO (CEV): most of these should be marked 'noinline'
-
 // set verbose logging, i.e. send logs to stderr
 void stats_log_verbose(bool verbose);
 
