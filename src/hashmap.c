@@ -8,6 +8,7 @@
 
 // Basic hash entry.
 typedef struct hashmap_entry {
+    size_t key_len;
     char *key;
     void *value;
     void *metadata;
@@ -102,6 +103,24 @@ int hashmap_size(hashmap *map) {
 }
 
 /**
+ * Returns the hash entry for key.
+ */
+static hashmap_entry *hashmap_index(hashmap_entry *table, int table_size,
+                                    const char *key, size_t key_len) {
+    // Mod the lower 64bits of the hash function with the table
+    // size to get the index
+    return table + (uint32_t)(murmur3_32(key, key_len, 0) % table_size);
+}
+
+/**
+ * Returns if key equals the hashmap entry key.
+ */
+static inline int hashmap_keys_equal(const hashmap_entry *entry, const char *key,
+                                     size_t key_len) {
+    return entry->key_len == key_len && memcmp(entry->key, key, key_len) == 0;
+}
+
+/**
  * Gets a value.
  * @arg key The key to look for
  * @arg key_len The key length
@@ -110,17 +129,13 @@ int hashmap_size(hashmap *map) {
  */
 int hashmap_get(hashmap *map, const char *key, void **value) {
     // Compute the hash value of the key
-    uint32_t out = murmur3_32(key, strlen(key), 0);
-
-    unsigned int index = out % map->table_size;
-
-    // Look for an entry
-    hashmap_entry *entry = map->table + index;
+    const size_t key_len = strlen(key);
+    hashmap_entry *entry = hashmap_index(map->table, map->table_size, key, key_len);
 
     // Scan the keys
     while (entry && entry->key) {
         // Found it
-        if (strcmp(entry->key, key) == 0) {
+        if (hashmap_keys_equal(entry, key, key_len)) {
             *value = entry->value;
             return 0;
         }
@@ -151,20 +166,15 @@ static int hashmap_insert_table(hashmap_entry *table,
         void *value,
         void *metadata,
         int should_cmp) {
-    // Compute the hash value of the key
-    uint32_t out = murmur3_32(key, key_len, 0);
-
-    unsigned int index = out % table_size;
-
     // Look for an entry
-    hashmap_entry *entry = table + index;
+    hashmap_entry *entry = hashmap_index(table, table_size, key, key_len);
     // last_entry governs if we saw any nodes with keys
     hashmap_entry *last_entry = NULL;
 
     // Scan the keys
     while (entry && entry->key) {
         // Found it, update the value
-        if (should_cmp && (strcmp(entry->key, key) == 0)) {
+        if (should_cmp && hashmap_keys_equal(entry, key, key_len)) {
             entry->value = value;
             return 0;
         }
@@ -181,13 +191,14 @@ static int hashmap_insert_table(hashmap_entry *table,
     // We already know the key length - no point using strdup
     char *insert_key = malloc(key_len + 1);
     if (insert_key == NULL) {
-        return -1; // WARN (CEV): handle OOM
+        return -1;
     }
     memcpy(insert_key, key, key_len + 1);
 
     // If last entry is NULL, we can just insert directly into the
     // table slot since it is empty
     if (last_entry == NULL) {
+        entry->key_len = key_len;
         entry->key = insert_key;
         entry->value = value;
         entry->metadata = metadata;
@@ -199,8 +210,9 @@ static int hashmap_insert_table(hashmap_entry *table,
         entry = calloc(1, sizeof(hashmap_entry));
         if (entry == NULL) {
             free(insert_key);
-            return -1; // WARN (CEV): handle OOM
+            return -1;
         }
+        entry->key_len = key_len;
         entry->key = insert_key;
         entry->value = value;
         entry->metadata = metadata;
@@ -290,20 +302,14 @@ int hashmap_put(hashmap *map, const char *key, void *value, void *metadata) {
  */
 int hashmap_delete(hashmap *map, const char *key) {
     // Compute the hash value of the key
-    uint32_t out = murmur3_32(key, strlen(key), 0);
-
-    // Mod the lower 64bits of the hash function with the table
-    // size to get the index
-    unsigned int index = out % map->table_size;
-
-    // Look for an entry
-    hashmap_entry *entry = map->table + index;
+    const size_t key_len = strlen(key);
+    hashmap_entry *entry = hashmap_index(map->table, map->table_size, key, key_len);
     hashmap_entry *last_entry = NULL;
 
     // Scan the keys
     while (entry && entry->key) {
         // Found it
-        if (strcmp(entry->key, key) == 0) {
+        if (hashmap_keys_equal(entry, key, key_len)) {
             // Free the key
             free(entry->key);
             map->count -= 1;
@@ -313,6 +319,7 @@ int hashmap_delete(hashmap *map, const char *key) {
                 // Copy the keys from the node, and free it
                 if (entry->next) {
                     hashmap_entry *n = entry->next;
+                    entry->key_len = n->key_len;
                     entry->key = n->key;
                     entry->value = n->value;
                     entry->next = n->next;
@@ -321,6 +328,7 @@ int hashmap_delete(hashmap *map, const char *key) {
 
                     // Zero everything out
                 } else {
+                    entry->key_len = 0;
                     entry->key = NULL;
                     entry->value = NULL;
                     entry->next = NULL;
