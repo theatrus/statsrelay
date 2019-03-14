@@ -111,6 +111,11 @@ static bool flush_upper_lower(const sampler_t* sampler) {
     return sampler->timer_flush_min_max;
 }
 
+// Get the sampling threshold
+static int sampler_threshold(const sampler_t* sampler) {
+    return sampler->threshold;
+}
+
 static time_t timestamp() {
     time_t timestamp_sec;
 #ifdef __APPLE__
@@ -556,10 +561,6 @@ sampling_result sampler_consider_gauge(sampler_t* sampler, const char* name, val
 
 int sampler_window(const sampler_t* sampler) {
     return sampler->window;
-}
-
-int sampler_threshold(const sampler_t* sampler) {
-    return sampler->threshold;
 }
 
 void sampler_destroy(sampler_t* sampler) {
