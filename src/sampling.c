@@ -22,7 +22,7 @@ typedef struct expiring_entry {
 } expiring_entry_t;
 
 struct sampler {
-    int threshold;
+    unsigned int threshold;
     int window;
     int cardinality;
     int reservoir_size;
@@ -107,12 +107,11 @@ struct sample_bucket {
  * if the calculated true upper and lower values for a sampled
  * timer needs flushing
  */
-static bool flush_upper_lower(sampler_t* sampler) {
+static bool flush_upper_lower(const sampler_t* sampler) {
     return sampler->timer_flush_min_max;
 }
 
 static time_t timestamp() {
-    struct timespec current_time;
     time_t timestamp_sec;
 #ifdef __APPLE__
     clock_serv_t cclock;
@@ -122,6 +121,7 @@ static time_t timestamp() {
     mach_port_deallocate(mach_task_self(), cclock);
     timestamp_sec = mts.tv_sec;
 #else
+    struct timespec current_time;
     clock_gettime(CLOCK_REALTIME_COARSE, &current_time);
     timestamp_sec = current_time.tv_sec;
 #endif
@@ -129,7 +129,25 @@ static time_t timestamp() {
     return timestamp_sec;
 }
 
+static const char *metric_type_name(metric_type type) {
+    switch (type) {
+    case METRIC_COUNTER:
+        return "counter";
+    case METRIC_TIMER:
+        return "timer";
+    case METRIC_GAUGE:
+        return "gauge";
+    case METRIC_UNKNOWN:
+    case METRIC_KV:
+    case METRIC_HIST:
+    case METRIC_S:
+    default:
+        return "unknown/other";
+    }
+}
+
 static int sampler_update_callback(void* _s, const char* key, void* _value, void *metadata) {
+    (void)metadata; // unused
     sampler_t* sampler = (sampler_t*)_s;
     struct sample_bucket* bucket = (struct sample_bucket*)_value;
 
@@ -138,43 +156,32 @@ static int sampler_update_callback(void* _s, const char* key, void* _value, void
     } else if (bucket->sampling && bucket->last_window_count <= sampler->threshold) {
         bucket->sampling = false;
         bucket->reservoir_index = 0;
-        char *type;
-        switch (bucket->type) {
-        case METRIC_COUNTER:
-            type = "counter";
-            break;
-        case METRIC_TIMER:
-            type = "timer";
-            break;
-        case METRIC_GAUGE:
-            type = "gauge";
-            break;
-        default:
-            type = "unknown/other";
-            break;
-        }
-        stats_debug_log("stopped %s sampling '%s'",
-                        type,
-                        key);
+        stats_debug_log("stopped %s sampling '%s'", metric_type_name(bucket->type), key);
     }
 
     bucket->last_window_count = 0;
     return 0;
 }
 
-static int expiry_callback(void* _s, const char* key, void* _value, void *metadata) {
-    sampler_t* sampler = (sampler_t*)_s;
-    struct sample_bucket* bucket = (struct sample_bucket*)_value;
-    int* ttl = (int*)metadata;
+// hashmap_iter callback for removing stale entries
+static int expiry_callback(void* data, const char* key, void* value, void *metadata) {
+    (void)data; // unused
+    (void)key;  // unused
+
+    const struct sample_bucket* bucket = (struct sample_bucket*)value;
+    const int ttl = *(int*)metadata;
 
     // simply return if the bucket is being sampled!
-    if (bucket->sampling) return 0;
+    if (bucket->sampling) {
+        return HASHMAP_ITER_CONTINUE;
+    }
 
     time_t now = timestamp();
 
-    if ((now - bucket->last_modified_at) > (*ttl)) {
-        if (_value)
-            free(_value);
+    if ((now - bucket->last_modified_at) > ttl) {
+        if (value) {
+            free(value);
+        }
         return HASHMAP_ITER_DELETE;
     }
 
@@ -184,9 +191,10 @@ static int expiry_callback(void* _s, const char* key, void* _value, void *metada
 static int sampler_flush_callback(void* _s, const char* key, void* _value, void* metadata) {
     struct sampler_flush_data* flush_data = (struct sampler_flush_data*)_s;
     struct sample_bucket* bucket = (struct sample_bucket*)_value;
+    sampler_t* sampler = (sampler_t*)flush_data->sampler;
 
     if (!bucket->sampling || bucket->count == 0) goto exit;
-    char line_buffer[MAX_UDP_LENGTH];
+    char line_buffer[MAX_UDP_LENGTH]; // WARN (CEV): check bounds
     int len;
     line_buffer[0] = '\0';
 
@@ -200,7 +208,7 @@ static int sampler_flush_callback(void* _s, const char* key, void* _value, void*
         flush_data->cb(flush_data->data, key, line_buffer, len);
     } else if (bucket->type == METRIC_TIMER) {
         int num_samples = 0;
-        for (int j = 0; j < flush_data->sampler->threshold; j++) {
+        for (int j = 0; j < sampler_threshold(sampler); j++) {
             if (!isnan(bucket->reservoir[j])) {
                 num_samples++;
             }
@@ -208,14 +216,14 @@ static int sampler_flush_callback(void* _s, const char* key, void* _value, void*
 
         // Flush the max and min for the well-being of timer.upper and timer.lower respectively
         // iff, client has explicitly requested a flush of .upper and .lower
-        if (bucket->upper > DBL_MIN && flush_upper_lower(flush_data->sampler)) {
+        if (bucket->upper > DBL_MIN && flush_upper_lower(sampler)) {
             len = sprintf(line_buffer, "%s:%g|ms@%g\n", key, bucket->upper, bucket->upper_sample_rate);
             len -= 1;
             flush_data->cb(flush_data->data, key, line_buffer, len);
             bucket->upper = DBL_MIN;
         }
 
-        if (bucket->lower < DBL_MAX && flush_upper_lower(flush_data->sampler)) {
+        if (bucket->lower < DBL_MAX && flush_upper_lower(sampler)) {
             len = sprintf(line_buffer, "%s:%g|ms@%g\n", key, bucket->lower, bucket->lower_sample_rate);
             len -= 1;
             flush_data->cb(flush_data->data, key, line_buffer, len);
@@ -223,7 +231,7 @@ static int sampler_flush_callback(void* _s, const char* key, void* _value, void*
         }
 
         double sample_rate = (double)(1.0 * num_samples) / bucket->count;
-        for (int j = 0; j < flush_data->sampler->threshold; j++) {
+        for (int j = 0; j < sampler_threshold(sampler); j++) {
             if (!isnan(bucket->reservoir[j])) {
                 len = sprintf(line_buffer, "%s:%g|ms@%g\n", key, bucket->reservoir[j], sample_rate);
                 len -= 1;
@@ -237,7 +245,7 @@ static int sampler_flush_callback(void* _s, const char* key, void* _value, void*
 
     exit:
     /* Also call update */
-    sampler_update_callback(flush_data->sampler, key, _value, metadata);
+    sampler_update_callback(sampler, key, _value, metadata);
     return 0;
 }
 
@@ -250,6 +258,7 @@ static bool flag_incoming_metric(sampler_t* sampler) {
 }
 
 static void expiry_callback_handler(struct ev_loop *loop, struct ev_timer *timer, int events) {
+    (void)events; // unused
     sampler_t* sampler = (sampler_t*)timer->data;
 
     // Iterate over items and callback.
@@ -261,6 +270,9 @@ static void expiry_callback_handler(struct ev_loop *loop, struct ev_timer *timer
 int sampler_init(sampler_t** sampler, int threshold, int window, int cardinality, int reservoir_size,
                  bool timer_flush_min_max, int hm_expiry_frequency, int hm_ttl) {
 
+    if (threshold < 0) {
+        return -1; // TODO (CEV): assert non-negative threshold
+    }
     struct sampler *sam = calloc(1, sizeof(struct sampler));
 
     hashmap_init(HM_SIZE, &sam->map);
@@ -304,18 +316,14 @@ void sampler_flush(sampler_t* sampler, sampler_flush_cb cb, void* data) {
 }
 
 sampling_result sampler_is_sampling(sampler_t* sampler, const char* name, metric_type type) {
-    struct sample_bucket* bucket = NULL;
-
-    hashmap_get(sampler->map, name, (void**)&bucket);
-
-    if (bucket == NULL) {
+    struct sample_bucket* bucket;
+    if (hashmap_get(sampler->map, name, (void**)&bucket) != 0) {
         return SAMPLER_NOT_SAMPLING;
-    } else {
-        if (bucket->sampling)
-            return SAMPLER_SAMPLING;
-        else
-            return SAMPLER_NOT_SAMPLING;
     }
+    if (bucket->sampling && bucket->type == type) {
+        return SAMPLER_SAMPLING;
+    }
+    return SAMPLER_NOT_SAMPLING;
 }
 
 void sampler_update_flags(sampler_t* sampler) {
@@ -546,11 +554,11 @@ sampling_result sampler_consider_gauge(sampler_t* sampler, const char* name, val
     return SAMPLER_NOT_SAMPLING;
 }
 
-int sampler_window(sampler_t* sampler) {
+int sampler_window(const sampler_t* sampler) {
     return sampler->window;
 }
 
-int sampler_threshold(sampler_t* sampler) {
+int sampler_threshold(const sampler_t* sampler) {
     return sampler->threshold;
 }
 

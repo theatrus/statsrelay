@@ -61,12 +61,12 @@ sampling_result sampler_is_sampling(sampler_t* sampler, const char* name, metric
 /*
  * Get the sampling window
  */
-int sampler_window(sampler_t* sampler);
+int sampler_window(const sampler_t* sampler);
 
 /*
  * Get the sampling threshold
  */
-int sampler_threshold(sampler_t* sampler);
+int sampler_threshold(const sampler_t* sampler);
 
 /**
  * Destroy the sampler
