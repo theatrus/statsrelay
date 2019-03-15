@@ -7,6 +7,7 @@
 #include "sampling.h"
 #include "hashmap.h"
 #include "stats.h"
+#include "log.h"
 
 #ifdef __APPLE__
 #include <mach/clock.h>
@@ -111,11 +112,6 @@ static bool flush_upper_lower(const sampler_t* sampler) {
     return sampler->timer_flush_min_max;
 }
 
-// Get the sampling threshold
-static int sampler_threshold(const sampler_t* sampler) {
-    return sampler->threshold;
-}
-
 static time_t timestamp() {
     time_t timestamp_sec;
 #ifdef __APPLE__
@@ -193,65 +189,125 @@ static int expiry_callback(void* data, const char* key, void* value, void *metad
     return HASHMAP_ITER_CONTINUE;
 }
 
+#ifndef unlikely
+#define unlikely(x) __builtin_expect(!!(x), 0)
+#endif
+
+static int check_sampler_snprintf(const int ret, const int bufsz)  {
+    if (unlikely(ret < 0 || ret >= bufsz)) {
+        if (ret < 0) {
+            stats_error_log("sampling: snprintf encoding error: %d", ret);
+        } else if (ret == bufsz) {
+            stats_error_log("sampling: snprintf buffer too small: %d", ret);
+        } else {
+            // This should not happen, unless we pass a NULL buffer to get
+            // the required bufsz in which case this function should have
+            // been called.
+            stats_error_log("sampling: snprintf invalid return value: %d", ret);
+        }
+        return 1;
+    }
+    return 0;
+}
+
 static int sampler_flush_callback(void* _s, const char* key, void* _value, void* metadata) {
+
     struct sampler_flush_data* flush_data = (struct sampler_flush_data*)_s;
     struct sample_bucket* bucket = (struct sample_bucket*)_value;
     sampler_t* sampler = (sampler_t*)flush_data->sampler;
 
-    if (!bucket->sampling || bucket->count == 0) goto exit;
-    char line_buffer[MAX_UDP_LENGTH]; // WARN (CEV): check bounds
     int len;
-    line_buffer[0] = '\0';
+    static char line_buffer[MAX_UDP_LENGTH];
 
-    if (bucket->type == METRIC_COUNTER) {
-        len = sprintf(line_buffer, "%s:%g|c@%g\n", key, bucket->sum / bucket->count, 1.0 / bucket->count);
+    if (!bucket->sampling || bucket->count == 0) {
+        goto exit;
+    }
+
+    switch (bucket->type) {
+    case METRIC_COUNTER:
+        len = snprintf(line_buffer, MAX_UDP_LENGTH, "%s:%g|c@%g\n",
+            key, bucket->sum / bucket->count, 1.0 / bucket->count);
+        if (check_sampler_snprintf(len, MAX_UDP_LENGTH)) {
+            goto exit;
+        }
         len -= 1; /* \n is not part of the length */
         flush_data->cb(flush_data->data, key, line_buffer, len);
-    } else if (bucket->type == METRIC_GAUGE) {
-        len = sprintf(line_buffer, "%s:%g|g\n", key, bucket->sum / bucket->count);
+        break;
+
+    case METRIC_GAUGE:
+        len = snprintf(line_buffer, MAX_UDP_LENGTH, "%s:%g|g\n",
+            key, bucket->sum / bucket->count);
+        if (check_sampler_snprintf(len, MAX_UDP_LENGTH)) {
+            goto exit;
+        }
         len -= 1; /* \n is not part of the length */
         flush_data->cb(flush_data->data, key, line_buffer, len);
-    } else if (bucket->type == METRIC_TIMER) {
+        break;
+
+    case METRIC_TIMER:
+        // Flush the max and min for the well-being of timer.upper and
+        // timer.lower respectively if, client has explicitly requested
+        // a flush of .upper and .lower
+        if (flush_upper_lower(sampler)) {
+            if (bucket->upper > DBL_MIN) {
+                len = snprintf(line_buffer, MAX_UDP_LENGTH, "%s:%g|ms@%g\n",
+                    key, bucket->upper, bucket->upper_sample_rate);
+                if (check_sampler_snprintf(len, MAX_UDP_LENGTH)) {
+                    goto exit;
+                }
+                len -= 1;
+                flush_data->cb(flush_data->data, key, line_buffer, len);
+                bucket->upper = DBL_MIN;
+            }
+            if (bucket->lower < DBL_MAX) {
+                len = snprintf(line_buffer, MAX_UDP_LENGTH, "%s:%g|ms@%g\n",
+                    key, bucket->lower, bucket->lower_sample_rate);
+                if (check_sampler_snprintf(len, MAX_UDP_LENGTH)) {
+                    goto exit;
+                }
+                len -= 1;
+                flush_data->cb(flush_data->data, key, line_buffer, len);
+                bucket->lower = DBL_MAX;
+            }
+        }
+
         int num_samples = 0;
-        for (int j = 0; j < sampler_threshold(sampler); j++) {
+        const int threshold = sampler->threshold;
+        for (int j = 0; j < threshold; j++) {
             if (!isnan(bucket->reservoir[j])) {
                 num_samples++;
             }
         }
+        const double sample_rate = (double)num_samples / (double)bucket->count;
 
-        // Flush the max and min for the well-being of timer.upper and timer.lower respectively
-        // iff, client has explicitly requested a flush of .upper and .lower
-        if (bucket->upper > DBL_MIN && flush_upper_lower(sampler)) {
-            len = sprintf(line_buffer, "%s:%g|ms@%g\n", key, bucket->upper, bucket->upper_sample_rate);
-            len -= 1;
-            flush_data->cb(flush_data->data, key, line_buffer, len);
-            bucket->upper = DBL_MIN;
-        }
-
-        if (bucket->lower < DBL_MAX && flush_upper_lower(sampler)) {
-            len = sprintf(line_buffer, "%s:%g|ms@%g\n", key, bucket->lower, bucket->lower_sample_rate);
-            len -= 1;
-            flush_data->cb(flush_data->data, key, line_buffer, len);
-            bucket->lower = DBL_MAX;
-        }
-
-        double sample_rate = (double)(1.0 * num_samples) / bucket->count;
-        for (int j = 0; j < sampler_threshold(sampler); j++) {
+        for (int j = 0; j < threshold; j++) {
             if (!isnan(bucket->reservoir[j])) {
-                len = sprintf(line_buffer, "%s:%g|ms@%g\n", key, bucket->reservoir[j], sample_rate);
+                len = snprintf(line_buffer, MAX_UDP_LENGTH, "%s:%g|ms@%g\n",
+                    key, bucket->reservoir[j], sample_rate);
+                if (check_sampler_snprintf(len, MAX_UDP_LENGTH)) {
+                    goto exit;
+                }
                 len -= 1;
                 flush_data->cb(flush_data->data, key, line_buffer, len);
                 bucket->reservoir[j] = NAN;
             }
         }
+        break;
+
+    case METRIC_UNKNOWN:
+    case METRIC_KV:
+    case METRIC_HIST:
+    case METRIC_S:
+        break; // do nothing
     }
+
     bucket->count = 0;
     bucket->sum = 0;
 
-    exit:
+exit:
     /* Also call update */
     sampler_update_callback(sampler, key, _value, metadata);
-    return 0;
+    return HASHMAP_ITER_CONTINUE;
 }
 
 /**
@@ -272,11 +328,12 @@ static void expiry_callback_handler(struct ev_loop *loop, struct ev_timer *timer
     ev_timer_start(loop, &sampler->base.map_expiry_timer);
 }
 
+// sampler_init initializes the sampler, if there is an error 1 is returned.
 int sampler_init(sampler_t** sampler, int threshold, int window, int cardinality, int reservoir_size,
                  bool timer_flush_min_max, int hm_expiry_frequency, int hm_ttl) {
 
     if (threshold < 0) {
-        return -1; // TODO (CEV): assert non-negative threshold
+        return 1;
     }
     struct sampler *sam = calloc(1, sizeof(struct sampler));
 
@@ -418,7 +475,7 @@ sampling_result sampler_consider_timer(sampler_t* sampler, const char* name, val
         bucket->count = 0;
         bucket->last_modified_at = timestamp();
 
-        for (int k = 0; k < sampler_threshold(sampler); k++) {
+        for (int k = 0; k < sampler->threshold; k++) {
             bucket->reservoir[k] = NAN;
         }
         bucket->last_window_count += 1;
@@ -474,7 +531,7 @@ sampling_result sampler_consider_timer(sampler_t* sampler, const char* name, val
                 }
             }
 
-            if (bucket->reservoir_index < sampler_threshold(sampler)) {
+            if (bucket->reservoir_index < sampler->threshold) {
                 bucket->reservoir[bucket->reservoir_index++] = value;
             } else {
                 long int i, k;
@@ -485,7 +542,7 @@ sampling_result sampler_consider_timer(sampler_t* sampler, const char* name, val
 #endif
                 k = i % (bucket->last_window_count);
 
-                if (k < sampler_threshold(sampler)) {
+                if (k < sampler->threshold) {
                     bucket->reservoir[k] = value;
                 }
             }
