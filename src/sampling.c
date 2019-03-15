@@ -338,6 +338,7 @@ int sampler_init(sampler_t** sampler, int threshold, int window, int cardinality
                  bool timer_flush_min_max, int hm_expiry_frequency, int hm_ttl) {
 
     if (threshold < 0) {
+        stats_error_log("sampling: negative threshold: %d", threshold);
         return 1;
     }
     struct sampler *sam = calloc(1, sizeof(struct sampler));
