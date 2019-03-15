@@ -147,10 +147,8 @@ static const char *metric_type_name(metric_type type) {
     }
 }
 
-static int sampler_update_callback(void* _s, const char* key, void* _value, void *metadata) {
-    (void)metadata; // unused
-    sampler_t* sampler = (sampler_t*)_s;
-    struct sample_bucket* bucket = (struct sample_bucket*)_value;
+static int sampler_update_callback_impl(const sampler_t* sampler, const char* key,
+                                        struct sample_bucket* bucket) {
 
     if (bucket->last_window_count > sampler->threshold) {
         bucket->sampling = true;
@@ -159,9 +157,16 @@ static int sampler_update_callback(void* _s, const char* key, void* _value, void
         bucket->reservoir_index = 0;
         stats_debug_log("stopped %s sampling '%s'", metric_type_name(bucket->type), key);
     }
-
     bucket->last_window_count = 0;
-    return 0;
+    return HASHMAP_ITER_CONTINUE;
+}
+
+static int sampler_update_callback(void* _s, const char* key, void* _value, void *metadata) {
+    (void)metadata; // unused
+    const sampler_t* sampler = (const sampler_t*)_s;
+    struct sample_bucket* bucket = (struct sample_bucket*)_value;
+
+    return sampler_update_callback_impl(sampler, key, bucket);
 }
 
 // hashmap_iter callback for removing stale entries
@@ -211,7 +216,7 @@ static int check_sampler_snprintf(const int ret, const int bufsz)  {
 }
 
 static int sampler_flush_callback(void* _s, const char* key, void* _value, void* metadata) {
-
+    (void)metadata; // unused
     struct sampler_flush_data* flush_data = (struct sampler_flush_data*)_s;
     struct sample_bucket* bucket = (struct sample_bucket*)_value;
     sampler_t* sampler = (sampler_t*)flush_data->sampler;
@@ -306,7 +311,7 @@ static int sampler_flush_callback(void* _s, const char* key, void* _value, void*
 
 exit:
     /* Also call update */
-    sampler_update_callback(sampler, key, _value, metadata);
+    sampler_update_callback_impl(sampler, key, bucket);
     return HASHMAP_ITER_CONTINUE;
 }
 
