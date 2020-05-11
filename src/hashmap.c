@@ -24,7 +24,7 @@ struct hashmap {
 /**
  * Creates a new hashmap and allocates space for it.
  * @arg initial_size The minimim initial size. 0 for default (64).
- * @arg map Output. Set to the address of the map
+ * @arg map Output. Set to the address of the map`
  * @return 0 on success.
  */
 int hashmap_init(int initial_size, hashmap **map) {

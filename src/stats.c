@@ -851,6 +851,12 @@ static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bo
         } else if (r == SAMPLER_SAMPLING) {
             continue;
         }
+
+        /* elide consecutive 0s */
+        if (group->count_sampler || group->gauge_sampler) {
+            r = consider_elide(key_buffer, )
+        }
+
         stats_write_to_backend(line, len, key_buffer, key_hash, key_len, group);
     }
     free(ovector);
