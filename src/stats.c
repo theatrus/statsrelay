@@ -785,7 +785,7 @@ static void sink_elide_refresh(struct http_sink* s) {
         elide_init(&s->elide, s->elide_skip % ELIDE_PERIOD);
     } else {
         int removed = elide_gc(s->elide, now);
-        syslog(LOG_NOTICE, "HTTP: GC elide removed %d entries", removed);
+        stats_log("HTTP: GC elide removed %d entries", removed);
     }
 }
 
@@ -794,19 +794,19 @@ const int ELIDE_PERIOD = 5;
 static void init_elision() {
     long int rand_seed;
     if (rand_gather((char*)&rand_seed, sizeof(long int)) == -1) {
-        syslog(LOG_NOTICE, "Falling back on system time to seed HTTP rand");
+        stats_log(LOG_NOTICE, "Falling back on system time to seed HTTP rand");
         rand_seed = time(0);
     }
     srand48_r(rand_seed, &randbuf);
 
     unsigned int elide_generation_add = 0;
     if (rand_gather((char*)&elide_generation_add, sizeof(unsigned int)) == -1) {
-        syslog(LOG_NOTICE, "HTTP: elision generation jitter not initialized");
+        stats_log(LOG_NOTICE, "HTTP: elision generation jitter not initialized");
     }
     s->elide_skip = elide_generation_add % ELIDE_PERIOD;
     if (s->elide_skip < 0)
         s->elide_skip = 0;
-    syslog(LOG_NOTICE, "HTTP: using elide skip of %d", s->elide_skip);
+    stats_log(LOG_NOTICE, "HTTP: using elide skip of %d", s->elide_skip);
 
     sink_elide_refresh(s);
 }
