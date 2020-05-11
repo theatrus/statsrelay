@@ -798,25 +798,32 @@ static void init_elision() {
     }
     srand48_r(rand_seed, &randbuf);
 
-    int elide_generation_add = 0;
-    if (rand_gather((char*)&elide_generation_add, sizeof(int)) == -1) {
+    unsigned int elide_generation_add = 0;
+    if (rand_gather((char*)&elide_generation_add, sizeof(unsigned int)) == -1) {
         syslog(LOG_NOTICE, "HTTP: elision generation jitter not initialized");
     }
     s->elide_skip = elide_generation_add % ELIDE_PERIOD;
+    if (s->elide_skip < 0)
+        s->elide_skip = 0;
+    syslog(LOG_NOTICE, "HTTP: using elide skip of %d", s->elide_skip);
 
     sink_elide_refresh(s);
 }
 
-static int consider_elide(char* key_buffer, validate_parsed_result_t* parsed) {
-    double sum = counter_sum(value);
-    if (sum == 0) {
+/**
+ * Check and report if this metric is elided or not.
+ * Returns: 0 if not, 1 if elided and should be skipped
+ */
+static int check_elide(struct cb_info* info, char* full_name, double value) {
+    if (value == 0) {
         int res = elide_mark(info->elide, full_name, info->now);
         if (res % ELIDE_PERIOD != info->elide->skip) {
-            break;
+            return 1;
         }
     } else {
         elide_unmark(info->elide, full_name, info->now);
     }
+    return 0;
 }
 
 static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bool send_to_monitor_cluster) {
@@ -899,7 +906,9 @@ static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bo
         }
 
         if (parsed_result.type == METRIC_COUNTER || parsed_result.type == METRIC_GAUGE) {
-            r = consider_elide(&key_buffer, &parsed_result);
+            if (check_elide(info, full_name, sum) == 1) {
+                continue;
+            }
         }
         stats_write_to_backend(line, len, key_buffer, key_hash, key_len, group);
     }
