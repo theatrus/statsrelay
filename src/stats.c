@@ -773,6 +773,52 @@ static void stats_write_to_backend(const char *line,
     backend->relayed_lines++;
 }
 
+/*
+ * Check if the sink's elision output buffer is not initialized, or
+ * if it requires re-initialization to purge old metrics.
+ */
+static void sink_elide_refresh(struct http_sink* s) {
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    now.tv_sec -= 60*15;
+    if (s->elide == NULL) {
+        elide_init(&s->elide, s->elide_skip % ELIDE_PERIOD);
+    } else {
+        elide_gc(s->elide, now);
+    }
+}
+
+const int ELIDE_PERIOD = 5;
+
+static void init_elision() {
+    long int rand_seed;
+    if (rand_gather((char*)&rand_seed, sizeof(long int)) == -1) {
+        syslog(LOG_NOTICE, "Falling back on system time to seed HTTP rand");
+        rand_seed = time(0);
+    }
+    srand48_r(rand_seed, &randbuf);
+
+    int elide_generation_add = 0;
+    if (rand_gather((char*)&elide_generation_add, sizeof(int)) == -1) {
+        syslog(LOG_NOTICE, "HTTP: elision generation jitter not initialized");
+    }
+    s->elide_skip = elide_generation_add % ELIDE_PERIOD;
+
+    sink_elide_refresh(s);
+}
+
+static int consider_elide(char* key_buffer, validate_parsed_result_t* parsed) {
+    double sum = counter_sum(value);
+    if (sum == 0) {
+        int res = elide_mark(info->elide, full_name, info->now);
+        if (res % ELIDE_PERIOD != info->elide->skip) {
+            break;
+        }
+    } else {
+        elide_unmark(info->elide, full_name, info->now);
+    }
+}
+
 static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bool send_to_monitor_cluster) {
     validate_parsed_result_t parsed_result;
     if (ss->config->enable_validation && ss->validator != NULL) {
@@ -850,6 +896,10 @@ static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bo
             continue;
         } else if (r == SAMPLER_SAMPLING) {
             continue;
+        }
+
+        if (parsed_result.type == METRIC_COUNTER || parsed_result.type == METRIC_GAUGE) {
+            r = consider_elide(&key_buffer, &parsed_result);
         }
         stats_write_to_backend(line, len, key_buffer, key_hash, key_len, group);
     }

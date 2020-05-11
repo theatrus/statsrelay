@@ -2,7 +2,7 @@ FROM ubuntu:trusty
 RUN mkdir /code
 COPY ci/llvm.sh /code
 RUN apt-get -y update && apt-get install -y wget cmake gcc g++ libev-dev libjansson-dev libpcre3-dev && bash /code/llvm.sh && rm -rf /var/lib/apt/lists/*
-RUN apt-get install --reinstall wamerican
+RUN apt-get install --reinstall wamerican; exit 0
 COPY . /code
 WORKDIR /code
 RUN mkdir build && cd build && cmake .. && make -j 4

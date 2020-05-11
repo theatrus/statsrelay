@@ -57,7 +57,7 @@ set(SOURCE_FILES
     src/vector.h
     src/sampling.h src/sampling.c)
 
-add_executable(statsrelay ${SOURCE_FILES} src/main.c)
+add_executable(statsrelay ${SOURCE_FILES} src/main.c src/elide.c src/elide.h src/rand.h src/rand.c)
 add_executable(stresstest src/stresstest.c)
 add_executable(stathasher ${SOURCE_FILES} src/stathasher.c)
 
