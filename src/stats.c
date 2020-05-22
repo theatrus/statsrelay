@@ -777,55 +777,55 @@ static void stats_write_to_backend(const char *line,
  * Check if the sink's elision output buffer is not initialized, or
  * if it requires re-initialization to purge old metrics.
  */
-static void sink_elide_refresh(struct http_sink* s) {
-    struct timeval now;
-    gettimeofday(&now, NULL);
-    now.tv_sec -= 60*15;
-    if (s->elide == NULL) {
-        elide_init(&s->elide, s->elide_skip % ELIDE_PERIOD);
-    } else {
-        int removed = elide_gc(s->elide, now);
-        stats_log("HTTP: GC elide removed %d entries", removed);
-    }
-}
-
-const int ELIDE_PERIOD = 5;
-
-static void init_elision() {
-    long int rand_seed;
-    if (rand_gather((char*)&rand_seed, sizeof(long int)) == -1) {
-        stats_log(LOG_NOTICE, "Falling back on system time to seed HTTP rand");
-        rand_seed = time(0);
-    }
-    srand48_r(rand_seed, &randbuf);
-
-    unsigned int elide_generation_add = 0;
-    if (rand_gather((char*)&elide_generation_add, sizeof(unsigned int)) == -1) {
-        stats_log(LOG_NOTICE, "HTTP: elision generation jitter not initialized");
-    }
-    s->elide_skip = elide_generation_add % ELIDE_PERIOD;
-    if (s->elide_skip < 0)
-        s->elide_skip = 0;
-    stats_log(LOG_NOTICE, "HTTP: using elide skip of %d", s->elide_skip);
-
-    sink_elide_refresh(s);
-}
+//static void sink_elide_refresh(struct http_sink* s) {
+//    struct timeval now;
+//    gettimeofday(&now, NULL);
+//    now.tv_sec -= 60*15;
+//    if (s->elide == NULL) {
+//        elide_init(&s->elide, s->elide_skip % ELIDE_PERIOD);
+//    } else {
+//        int removed = elide_gc(s->elide, now);
+//        stats_log("HTTP: GC elide removed %d entries", removed);
+//    }
+//}
+//
+//const int ELIDE_PERIOD = 5;
+//
+//static void init_elision() {
+//    long int rand_seed;
+//    if (rand_gather((char*)&rand_seed, sizeof(long int)) == -1) {
+//        stats_log(LOG_NOTICE, "Falling back on system time to seed HTTP rand");
+//        rand_seed = time(0);
+//    }
+//    srand48_r(rand_seed, &randbuf);
+//
+//    unsigned int elide_generation_add = 0;
+//    if (rand_gather((char*)&elide_generation_add, sizeof(unsigned int)) == -1) {
+//        stats_log(LOG_NOTICE, "HTTP: elision generation jitter not initialized");
+//    }
+//    s->elide_skip = elide_generation_add % ELIDE_PERIOD;
+//    if (s->elide_skip < 0)
+//        s->elide_skip = 0;
+//    stats_log(LOG_NOTICE, "HTTP: using elide skip of %d", s->elide_skip);
+//
+//    sink_elide_refresh(s);
+//}
 
 /**
  * Check and report if this metric is elided or not.
  * Returns: 0 if not, 1 if elided and should be skipped
  */
-static int check_elide(struct cb_info* info, char* full_name, double value) {
-    if (value == 0) {
-        int res = elide_mark(info->elide, full_name, info->now);
-        if (res % ELIDE_PERIOD != info->elide->skip) {
-            return 1;
-        }
-    } else {
-        elide_unmark(info->elide, full_name, info->now);
-    }
-    return 0;
-}
+//static int check_elide(struct cb_info* info, char* full_name, double value) {
+//    if (value == 0) {
+//        int res = elide_mark(info->elide, full_name, info->now);
+//        if (res % ELIDE_PERIOD != info->elide->skip) {
+//            return 1;
+//        }
+//    } else {
+//        elide_unmark(info->elide, full_name, info->now);
+//    }
+//    return 0;
+//}
 
 static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bool send_to_monitor_cluster) {
     validate_parsed_result_t parsed_result;
@@ -906,11 +906,11 @@ static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bo
             continue;
         }
 
-        if (parsed_result.type == METRIC_COUNTER || parsed_result.type == METRIC_GAUGE) {
-            if (check_elide(info, full_name, sum) == 1) {
-                continue;
-            }
-        }
+//        if (parsed_result.type == METRIC_COUNTER || parsed_result.type == METRIC_GAUGE) {
+//            if (check_elide(info, full_name, sum) == 1) {
+//                continue;
+//            }
+//        }
         stats_write_to_backend(line, len, key_buffer, key_hash, key_len, group);
     }
     free(ovector);
