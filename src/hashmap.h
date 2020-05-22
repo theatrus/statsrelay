@@ -1,6 +1,12 @@
 #ifndef HASHMAP_H
 #define HASHMAP_H
 
+enum {
+    HASHMAP_ITER_DELETE = -1,
+    HASHMAP_ITER_CONTINUE = 0,
+    HASHMAP_ITER_STOP = 1,
+};
+
 /**
  * Opaque hashmap reference
  */
