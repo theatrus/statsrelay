@@ -156,7 +156,7 @@ int hashmap_get(hashmap *map, const char *key, void **value) {
  * @arg should_cmp Should keys be compared to existing ones.
  * @return 1 if the key is new, 0 if updated.
  */
-static int hashmap_insert_table(hashmap_entry *table, int table_size, const char *key, int key_len,
+static int hashmap_insert_table(hashmap_entry *table, int table_size, char *key, int key_len,
                                 void *value, void *metadata, int should_cmp) {
     // Compute the hash value of the key
     uint64_t out[2];
