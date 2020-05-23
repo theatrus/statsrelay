@@ -17,7 +17,7 @@ int elide_mark(elide_t* e, char* key, struct timeval now) {
     if (res == -1) {
         v = calloc(sizeof(elide_value_t), 1);
         v->generations = e->skip;
-        hashmap_put(e->elide_map, key, v);
+        hashmap_put(e->elide_map, key, v, NULL);
     }
     memcpy(&v->last_seen, &now, sizeof(struct timeval));
     return v->generations++;
@@ -28,7 +28,7 @@ int elide_unmark(elide_t* e, char *key, struct timeval now) {
     int res = hashmap_get(e->elide_map, key, (void**)&v);
     if (res == -1) {
         v = calloc(sizeof(elide_value_t), 1);
-        hashmap_put(e->elide_map, key, v);
+        hashmap_put(e->elide_map, key, v, NULL);
     }
     memcpy(&v->last_seen, &now, sizeof(struct timeval));
     v->generations = e->skip;
@@ -51,7 +51,7 @@ struct cb_info {
     struct timeval cutoff;
 };
 
-static int elide_gc_cb(void* data, const char *key, void* value) {
+static int elide_gc_cb(void* data, const char *key, void* value, void* metadata) {
     struct cb_info* info = (struct cb_info*)data;
     elide_value_t* oldvalue = (elide_value_t*)value;
 

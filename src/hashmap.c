@@ -157,7 +157,7 @@ int hashmap_get(hashmap *map, const char *key, void **value) {
  * @arg should_dup Should duplicate keys
  * @return 1 if the key is new, 0 if updated.
  */
-static int hashmap_insert_table(hashmap_entry *table, int table_size, char *key, int key_len,
+static int hashmap_insert_table(hashmap_entry *table, int table_size, const char *key, int key_len,
                                 void *value, void *metadata, int should_cmp, int should_dup) {
     // Compute the hash value of the key
     uint64_t out[2];
@@ -233,7 +233,7 @@ static void hashmap_double_size(hashmap *map) {
             // Do not compare keys or duplicate since we are just doubling our
             // size, and we have unique keys and duplicates already.
             hashmap_insert_table(new_table, new_size, old->key, strlen(old->key),
-                                 old->value, 0, 0);
+                                 old->value, old->metadata, 0, 0);
 
             // The initial entry is in the table
             // and we should not free that one.
@@ -263,7 +263,7 @@ static void hashmap_double_size(hashmap *map) {
  * @arg metadata arbitrary information
  * 0 if updated, 1 if added.
  */
-int hashmap_put(hashmap *map, char *key, void *value, void *metadata) {
+int hashmap_put(hashmap *map, const char *key, void *value, void *metadata) {
     // Check if we need to double the size
     if (map->count + 1 > map->max_size) {
         // Doubles the size of the hashmap, re-try the insert
@@ -394,7 +394,7 @@ int hashmap_iter(hashmap *map, hashmap_callback cb, void *data) {
         entry = map->table+i;
         while (entry && entry->key && !should_break) {
             // Invoke the callback
-            should_break = cb(data, entry->key, entry->value);
+            should_break = cb(data, entry->key, entry->value, entry->metadata);
             entry = entry->next;
         }
     }
@@ -426,7 +426,7 @@ int hashmap_filter(hashmap *map, hashmap_callback cb, void *data) {
             continue;
         while (entry && entry->key) {
             // Check this value for removal
-            int should_remove = cb(data, entry->key, entry->value);
+            int should_remove = cb(data, entry->key, entry->value, entry->metadata);
 
             // Walk the next links
             old = entry;
@@ -436,7 +436,7 @@ int hashmap_filter(hashmap *map, hashmap_callback cb, void *data) {
             // Do not compare keys or duplicate since we are just moving values
             if (!should_remove) {
                 hashmap_insert_table(new_table, map->table_size, old->key, strlen(old->key),
-                                     old->value, 0, 0);
+                                     old->value, old->metadata, 0, 0);
             } else {
                 free(old->key);
                 map->count--;

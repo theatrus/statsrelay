@@ -11,7 +11,7 @@ enum {
  * Opaque hashmap reference
  */
 typedef struct hashmap hashmap;
-typedef int(*hashmap_callback)(void *data, const char *key, void *value);
+typedef int(*hashmap_callback)(void *data, const char *key, void *value, void *metadata);
 
 /**
  * Creates a new hashmap and allocates space for it.
@@ -43,7 +43,7 @@ int hashmap_tablesize(hashmap *map);
  * @arg value Output. Set to the value of th key.
  * 0 on success. -1 if not found.
  */
-int hashmap_get(hashmap *map, char *key, void **value);
+int hashmap_get(hashmap *map, const char *key, void **value);
 
 /**
  * Puts a key/value pair.
@@ -55,7 +55,7 @@ int hashmap_get(hashmap *map, char *key, void **value);
  * @arg metadata arbitrary information
  * 0 if updated, 1 if added.
  */
-int hashmap_put(hashmap *map, char *key, void *value, void *metadata);
+int hashmap_put(hashmap *map, const char *key, void *value, void *metadata);
 
 /**
  * Deletes a key/value pair.
