@@ -10,6 +10,7 @@
 typedef struct hashmap_entry {
     char *key;
     void *value;
+    void *metadata;
     struct hashmap_entry *next; // Support linking.
 } hashmap_entry;
 
@@ -117,7 +118,7 @@ int hashmap_tablesize(hashmap *map) {
  * @arg value Output. Set to the value of th key.
  * 0 on success. -1 if not found.
  */
-int hashmap_get(hashmap *map, char *key, void **value) {
+int hashmap_get(hashmap *map, const char *key, void **value) {
     // Compute the hash value of the key
     uint64_t out[2];
     MurmurHash3_x64_128(key, strlen(key), 0, &out);
@@ -157,7 +158,7 @@ int hashmap_get(hashmap *map, char *key, void **value) {
  * @return 1 if the key is new, 0 if updated.
  */
 static int hashmap_insert_table(hashmap_entry *table, int table_size, char *key, int key_len,
-                                void *value, int should_cmp, int should_dup) {
+                                void *value, void *metadata, int should_cmp, int should_dup) {
     // Compute the hash value of the key
     uint64_t out[2];
     MurmurHash3_x64_128(key, key_len, 0, &out);
@@ -189,6 +190,7 @@ static int hashmap_insert_table(hashmap_entry *table, int table_size, char *key,
     if (entry && last_entry == NULL) {
         entry->key = (should_dup) ? strdup(key) : key;
         entry->value = value;
+        entry->metadata = metadata;
 
         // We have a last value, need to link against it with our new
         // value.
@@ -196,6 +198,7 @@ static int hashmap_insert_table(hashmap_entry *table, int table_size, char *key,
         entry = calloc(1, sizeof(hashmap_entry));
         entry->key = (should_dup) ? strdup(key) : key;
         entry->value = value;
+        entry->metadata = metadata;
         last_entry->next = entry;
     } else {
         return -1;
@@ -257,18 +260,19 @@ static void hashmap_double_size(hashmap *map) {
  * @notes This method is not thread safe.
  * @arg key_len The key length
  * @arg value The value to set.
+ * @arg metadata arbitrary information
  * 0 if updated, 1 if added.
  */
-int hashmap_put(hashmap *map, char *key, void *value) {
+int hashmap_put(hashmap *map, char *key, void *value, void *metadata) {
     // Check if we need to double the size
     if (map->count + 1 > map->max_size) {
         // Doubles the size of the hashmap, re-try the insert
         hashmap_double_size(map);
-        return hashmap_put(map, key, value);
+        return hashmap_put(map, key, value, metadata);
     }
 
     // Insert into the map, comparing keys and duplicating keys
-    int new = hashmap_insert_table(map->table, map->table_size, key, strlen(key), value, 1, 1);
+    int new = hashmap_insert_table(map->table, map->table_size, key, strlen(key), value, metadata, 1, 1);
     if (new) map->count += 1;
 
     return new;
@@ -280,7 +284,7 @@ int hashmap_put(hashmap *map, char *key, void *value) {
  * @arg key The key to delete
  * 0 on success. -1 if not found.
  */
-int hashmap_delete(hashmap *map, char *key) {
+int hashmap_delete(hashmap *map, const char *key) {
     // Compute the hash value of the key
     uint64_t out[2];
     MurmurHash3_x64_128(key, strlen(key), 0, &out);
@@ -309,12 +313,15 @@ int hashmap_delete(hashmap *map, char *key) {
                     entry->key = n->key;
                     entry->value = n->value;
                     entry->next = n->next;
+                    entry->metadata = n->metadata;
                     free(n);
 
                     // Zero everything out
                 } else {
                     entry->key = NULL;
                     entry->value = NULL;
+                    entry->next = NULL;
+                    entry->metadata = NULL;
                 }
 
             } else {
@@ -326,6 +333,7 @@ int hashmap_delete(hashmap *map, char *key) {
             }
             return 0;
         }
+        last_entry = entry;
         // Walk the chain
         entry = entry->next;
     }
