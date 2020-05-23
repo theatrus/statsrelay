@@ -154,11 +154,10 @@ int hashmap_get(hashmap *map, const char *key, void **value) {
  * @arg key_len The length of the key
  * @arg value The value to associate
  * @arg should_cmp Should keys be compared to existing ones.
- * @arg should_dup Should duplicate keys
  * @return 1 if the key is new, 0 if updated.
  */
 static int hashmap_insert_table(hashmap_entry *table, int table_size, const char *key, int key_len,
-                                void *value, void *metadata, int should_cmp, int should_dup) {
+                                void *value, void *metadata, int should_cmp) {
     // Compute the hash value of the key
     uint64_t out[2];
     MurmurHash3_x64_128(key, key_len, 0, &out);
@@ -188,7 +187,7 @@ static int hashmap_insert_table(hashmap_entry *table, int table_size, const char
     // If last entry is NULL, we can just insert directly into the
     // table slot since it is empty
     if (entry && last_entry == NULL) {
-        entry->key = (should_dup) ? strdup(key) : key;
+        entry->key = key;
         entry->value = value;
         entry->metadata = metadata;
 
@@ -196,7 +195,7 @@ static int hashmap_insert_table(hashmap_entry *table, int table_size, const char
         // value.
     } else if (last_entry) {
         entry = calloc(1, sizeof(hashmap_entry));
-        entry->key = (should_dup) ? strdup(key) : key;
+        entry->key = (key);
         entry->value = value;
         entry->metadata = metadata;
         last_entry->next = entry;
@@ -233,7 +232,7 @@ static void hashmap_double_size(hashmap *map) {
             // Do not compare keys or duplicate since we are just doubling our
             // size, and we have unique keys and duplicates already.
             hashmap_insert_table(new_table, new_size, old->key, strlen(old->key),
-                                 old->value, old->metadata, 0, 0);
+                                 old->value, old->metadata, 0);
 
             // The initial entry is in the table
             // and we should not free that one.
@@ -270,10 +269,15 @@ int hashmap_put(hashmap *map, const char *key, void *value, void *metadata) {
         hashmap_double_size(map);
         return hashmap_put(map, key, value, metadata);
     }
+    char* insert_key = strdup(key);
 
     // Insert into the map, comparing keys and duplicating keys
-    int new = hashmap_insert_table(map->table, map->table_size, key, strlen(key), value, metadata, 1, 1);
-    if (new) map->count += 1;
+    int new = hashmap_insert_table(map->table, map->table_size, insert_key, strlen(key), value, metadata, 1);
+    if (new > 0) {
+        map->count += 1;
+    } else {
+        free(insert_key);
+    }
 
     return new;
 }
@@ -436,7 +440,7 @@ int hashmap_filter(hashmap *map, hashmap_callback cb, void *data) {
             // Do not compare keys or duplicate since we are just moving values
             if (!should_remove) {
                 hashmap_insert_table(new_table, map->table_size, old->key, strlen(old->key),
-                                     old->value, old->metadata, 0, 0);
+                                     old->value, old->metadata, 0);
             } else {
                 free(old->key);
                 map->count--;
