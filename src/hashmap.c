@@ -17,7 +17,7 @@ struct hashmap {
     int count;      // Number of entries
     int table_size; // Size of table in nodes
     int max_size;   // Max size before we resize
-    hashmap_entry *table; // Pointer to an arry of hashmap_entry objects
+    hashmap_entry *table; // Pointer to an array of hashmap_entry objects
 };
 
 // Link the external murmur hash in
