@@ -11,6 +11,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include <sys/time.h>
+#include "elide.h"
 
 #include "stats.h"
 
@@ -789,7 +791,7 @@ static void stats_write_to_backend(const char *line,
 //    }
 //}
 //
-//const int ELIDE_PERIOD = 5;
+const int ELIDE_PERIOD = 5;
 //
 //static void init_elision() {
 //    long int rand_seed;
@@ -815,19 +817,26 @@ static void stats_write_to_backend(const char *line,
  * Check and report if this metric is elided or not.
  * Returns: 0 if not, 1 if elided and should be skipped
  */
-//static int check_elide(struct cb_info* info, char* full_name, double value) {
-//    if (value == 0) {
-//        int res = elide_mark(info->elide, full_name, info->now);
-//        if (res % ELIDE_PERIOD != info->elide->skip) {
-//            return 1;
-//        }
-//    } else {
-//        elide_unmark(info->elide, full_name, info->now);
-//    }
-//    return 0;
-//}
+static int check_elide(elide_t* elide, char* full_name, double value) {
+    struct timeval now;
+    gettimeofday(&now, NULL);
+
+    if (value == 0) {
+        int res = elide_mark(elide, full_name, now);
+        if (res % ELIDE_PERIOD != elide->skip) {
+            return 1;
+        }
+    } else {
+        elide_unmark(elide, full_name, now);
+    }
+    return 0;
+}
 
 static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bool send_to_monitor_cluster) {
+    // TODO: where do we init this?
+    elide_t *elide;
+    elide_init(&elide, ELIDE_PERIOD);
+
     validate_parsed_result_t parsed_result;
     if (ss->config->enable_validation && ss->validator != NULL) {
         if (ss->validator(line, len, &parsed_result, ss->validate_point_tags, ss->config->validate_tags) != 0) {
@@ -906,11 +915,11 @@ static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bo
             continue;
         }
 
-//        if (parsed_result.type == METRIC_COUNTER || parsed_result.type == METRIC_GAUGE) {
-//            if (check_elide(info, full_name, sum) == 1) {
-//                continue;
-//            }
-//        }
+        if (parsed_result.type == METRIC_COUNTER || parsed_result.type == METRIC_GAUGE) {
+            if (check_elide(elide, key_buffer, parsed_result.value) == 1) {
+                continue;
+            }
+        }
         stats_write_to_backend(line, len, key_buffer, key_hash, key_len, group);
     }
     free(ovector);

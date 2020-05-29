@@ -55,6 +55,8 @@ set(SOURCE_FILES
     src/validate.h
     src/vector.c
     src/vector.h
+    src/elide.c
+    src/elide.h
     deps/murmurhash/MurmurHash3.c
     deps/murmurhash/MurmurHash3.h
     src/sampling.h src/sampling.c)

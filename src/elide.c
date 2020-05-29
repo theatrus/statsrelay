@@ -35,7 +35,7 @@ int elide_unmark(elide_t* e, char *key, struct timeval now) {
     return e->skip;
 }
 
-static int elide_delete_cb(void* data, const char *key, void* value) {
+static int elide_delete_cb(void* data, const char *key, void* value, void *metadata) {
     free(value);
     return 0;
 }
@@ -51,7 +51,7 @@ struct cb_info {
     struct timeval cutoff;
 };
 
-static int elide_gc_cb(void* data, const char *key, void* value, void* metadata) {
+static int elide_gc_cb(void* data, const char *key, void* value, void *metadata) {
     struct cb_info* info = (struct cb_info*)data;
     elide_value_t* oldvalue = (elide_value_t*)value;
 
