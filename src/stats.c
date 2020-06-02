@@ -516,6 +516,11 @@ stats_server_t *stats_server_create(struct ev_loop *loop,
     server->config = config;
     server->rings = statsrelay_list_new();
     server->monitor_ring = statsrelay_list_new();
+
+    elide_t *elide;
+    elide_init(&elide, ELIDE_PERIOD);
+    server->elide = elide;
+
     {
         /*
          * 1. Load the primary shard map from the configuration, if present
@@ -791,7 +796,6 @@ static void stats_write_to_backend(const char *line,
 //    }
 //}
 //
-const int ELIDE_PERIOD = 5;
 //
 //static void init_elision() {
 //    long int rand_seed;
@@ -833,10 +837,6 @@ static int check_elide(elide_t* elide, char* full_name, double value) {
 }
 
 static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bool send_to_monitor_cluster) {
-    // TODO: where do we init this?
-    elide_t *elide;
-    elide_init(&elide, ELIDE_PERIOD);
-
     validate_parsed_result_t parsed_result;
     if (ss->config->enable_validation && ss->validator != NULL) {
         if (ss->validator(line, len, &parsed_result, ss->validate_point_tags, ss->config->validate_tags) != 0) {
@@ -916,7 +916,7 @@ static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bo
         }
 
         if (parsed_result.type == METRIC_COUNTER || parsed_result.type == METRIC_GAUGE) {
-            if (check_elide(elide, key_buffer, parsed_result.value) == 1) {
+            if (check_elide(ss->elide, key_buffer, parsed_result.value) == 1) {
                 continue;
             }
         }

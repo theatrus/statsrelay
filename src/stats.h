@@ -16,6 +16,7 @@
 #include "./tcpclient.h"
 #include "./validate.h"
 #include "sampling.h"
+#include "./elide.h"
 
 
 #define MAX_UDP_LENGTH 65536
@@ -107,6 +108,8 @@ struct stats_server_t {
 
 	// timer to flush health stats to central cluster
 	ev_timer stats_flusher;
+
+    elide_t *elide;
 };
 
 typedef struct {

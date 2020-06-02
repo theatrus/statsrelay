@@ -14,6 +14,8 @@ typedef struct {
     int skip;
 } elide_t;
 
+const int ELIDE_PERIOD = 5;
+
 /**
  * Initialize an elision map to report constant values
  * Args:
