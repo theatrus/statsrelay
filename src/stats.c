@@ -16,7 +16,7 @@
 
 #include "stats.h"
 
-const int ELIDE_PERIOD = 5;
+const int ELIDE_PERIOD = 10;
 
 // Forward declare
 static void stats_write_to_backend(const char *line,
