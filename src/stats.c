@@ -882,7 +882,11 @@ static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bo
 
         if (parsed_result.type == METRIC_COUNTER || parsed_result.type == METRIC_GAUGE) {
             if (check_elide(ss->elide, key_buffer, parsed_result.value) == 1) {
+                stats_log("stats: elided key: \"%s\" value: \"%s\"", key_buffer, parsed_result.value);
                 continue;
+            }
+            else {
+                stats_log("stats: elision kept the key: \"%s\" value: \"%s\"", key_buffer, parsed_result.value);
             }
         }
         stats_write_to_backend(line, len, key_buffer, key_hash, key_len, group);
