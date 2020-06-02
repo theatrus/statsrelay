@@ -3,6 +3,7 @@
 
 #include "elide.h"
 
+
 int elide_init(elide_t** e, int skip) {
     elide_t* el = malloc(sizeof(elide_t));
     int res = hashmap_init(0, &el->elide_map);
