@@ -12,6 +12,7 @@ typedef struct {
 typedef struct {
     hashmap *elide_map;
     int skip;
+    struct timeval last_gc;
 } elide_t;
 
 /**

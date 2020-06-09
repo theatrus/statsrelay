@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 
 #include "elide.h"
 
@@ -64,10 +65,27 @@ static int elide_gc_cb(void* data, const char *key, void* value, void *metadata)
 }
 
 int elide_gc(elide_t* e, struct timeval cutoff) {
-    struct cb_info cb = {
-            .cutoff = cutoff
-    };
-    int pre_count = hashmap_size(e->elide_map);
-    hashmap_filter(e->elide_map, elide_gc_cb, (void*)&cb);
-    return pre_count - hashmap_size(e->elide_map);
+    // initialize last_gc with now, if never called
+    if (e->last_gc.tv_sec == 0) {
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        e->last_gc = now;
+        return 0;
+    }
+
+    // compare seconds only
+    if (e->last_gc.tv_sec < cutoff.tv_sec) {
+        struct cb_info cb = {
+                .cutoff = cutoff
+        };
+        int pre_count = hashmap_size(e->elide_map);
+        hashmap_filter(e->elide_map, elide_gc_cb, (void *) &cb);
+
+        struct timeval now;
+        gettimeofday(&now, NULL);
+        e->last_gc = now;
+        return pre_count - hashmap_size(e->elide_map);
+    }
+
+    return 0;
 }

@@ -16,7 +16,11 @@
 
 #include "stats.h"
 
+// after sampling, up to <ELIDE_PERIOD> consecutive 0s will be skipped
 const int ELIDE_PERIOD = 10;
+
+// entries older than this in seconds will be removed from the elision hashmap
+const int ELIDE_GC_PERIOD = 60*15;
 
 // Forward declare
 static void stats_write_to_backend(const char *line,
@@ -804,6 +808,17 @@ static int check_elide(elide_t* elide, char* full_name, double value) {
     return 0;
 }
 
+/**
+ * Garbage collects items older than ELIDE_GC_PERIOD seconds, no more frequently than ELIDE_GC_PERIOD
+ */
+static int gc_elide(elide_t* elide) {
+    struct timeval cutoff;
+    gettimeofday(&cutoff, NULL);
+    cutoff.tv_sec -= ELIDE_GC_PERIOD;
+
+    return elide_gc(elide, cutoff);
+}
+
 static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bool send_to_monitor_cluster) {
     validate_parsed_result_t parsed_result;
     if (ss->config->enable_validation && ss->validator != NULL) {
@@ -884,6 +899,10 @@ static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bo
         }
 
         if (parsed_result.type == METRIC_COUNTER || parsed_result.type == METRIC_GAUGE) {
+            int removed = gc_elide(ss->elide);
+            if (removed > 0) {
+                stats_log("stats: expired %d keys from the elision hashmap", removed);
+            }
             if (check_elide(ss->elide, key_buffer, parsed_result.value) == 1) {
                 stats_log("stats: elided key: \"%s\" value: \"%s\"", key_buffer, parsed_result.value);
                 continue;
