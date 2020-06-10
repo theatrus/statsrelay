@@ -655,9 +655,6 @@ stats_server_t *stats_server_create(struct ev_loop *loop,
     server->validator = validator;
     server->validate_point_tags = NULL;
 
-    elide_destroy(server->elide);
-    server->elide = NULL;
-
     /**
      * if validation is enabled, we expect
      * point tag regex expression be provided
@@ -1258,6 +1255,9 @@ void stats_server_destroy(stats_server_t *server) {
 
     server->num_backends = 0;
     server->num_monitor_backends = 0;
+
+    elide_destroy(server->elide);
+    server->elide = NULL;
 
     free(server);
 }
