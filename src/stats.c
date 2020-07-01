@@ -796,7 +796,7 @@ static int check_elide(elide_t* elide, char* full_name, double value) {
 
     if (value == 0) {
         int res = elide_mark(elide, full_name, now);
-        if (res % ELIDE_PERIOD != elide->skip) {
+        if (res % ELIDE_PERIOD != 0) {
             return 1;
         }
     } else {
@@ -901,7 +901,7 @@ static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bo
                 stats_log("stats: expired %d keys from the elision hashmap", removed);
             }
             if (check_elide(ss->elide, key_buffer, parsed_result.value) == 1) {
-                stats_log("stats: elided key: \"%s\" value: \"%s\"", key_buffer, parsed_result.value);
+                stats_log("stats: elided key: \"%s\" value: \"%f\"", key_buffer, parsed_result.value);
                 continue;
             }
         }
