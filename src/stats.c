@@ -401,9 +401,13 @@ static void flush_cluster_stats(struct ev_loop *loop, struct ev_timer *watcher, 
                     "group_%i.relayed_lines:%" PRIu64 "|g\n",
                     i, group->relayed_lines));
         buffer_produced(response,
-                        snprintf((char *)buffer_tail(response), buffer_spacecount(response),
-                                 "group_%i.rejected_lines:%" PRIu64 "|g\n",
-                                 i, group->rejected_lines));
+                snprintf((char *)buffer_tail(response), buffer_spacecount(response),
+                    "group_%i.rejected_lines:%" PRIu64 "|g\n",
+                    i, group->rejected_lines));
+        buffer_produced(response,
+                snprintf((char *)buffer_tail(response), buffer_spacecount(response),
+                    "group_%i.elided_lines:%" PRIu64 "|g\n",
+                    i, group->elided_lines));
     }
 
     for (size_t i = 0; i < server->num_backends; i++) {
@@ -901,7 +905,7 @@ static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bo
                 stats_log("stats: expired %d keys from the elision hashmap", removed);
             }
             if (check_elide(ss->elide, key_buffer, parsed_result.value) == 1) {
-                stats_log("stats: elided key: \"%s\" value: \"%f\"", key_buffer, parsed_result.value);
+                group->elided_lines++;
                 continue;
             }
         }
@@ -974,9 +978,13 @@ void stats_send_statistics(stats_session_t *session) {
                     "group:%i relayed_lines gauge %" PRIu64 "\n",
                     i, group->relayed_lines));
         buffer_produced(response,
-                        snprintf((char *)buffer_tail(response), buffer_spacecount(response),
-                                 "group:%i rejected_lines gauge %" PRIu64 "\n",
-                                 i, group->rejected_lines));
+                snprintf((char *)buffer_tail(response), buffer_spacecount(response),
+                    "group:%i rejected_lines gauge %" PRIu64 "\n",
+                    i, group->rejected_lines));
+        buffer_produced(response,
+                snprintf((char *)buffer_tail(response), buffer_spacecount(response),
+                    "group:%i elided_lines gauge %" PRIu64 "\n",
+                    i, group->elided_lines));
     }
 
     for (size_t i = 0; i < session->server->num_backends; i++) {

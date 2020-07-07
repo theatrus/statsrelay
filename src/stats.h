@@ -75,6 +75,7 @@ typedef struct {
 	uint64_t filtered_lines;
 	uint64_t rejected_lines;
 	uint64_t flagged_lines;
+	uint64_t elided_lines;
 } stats_backend_group_t;
 
 struct stats_server_t {
