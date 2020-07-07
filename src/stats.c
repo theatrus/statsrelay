@@ -11,8 +11,16 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include <sys/time.h>
+#include "elide.h"
 
 #include "stats.h"
+
+// after sampling, up to <ELIDE_PERIOD> consecutive 0s will be skipped
+const int ELIDE_PERIOD = 10;
+
+// entries older than this in seconds will be removed from the elision hashmap
+const int ELIDE_GC_PERIOD = 60*15;
 
 // Forward declare
 static void stats_write_to_backend(const char *line,
@@ -514,6 +522,11 @@ stats_server_t *stats_server_create(struct ev_loop *loop,
     server->config = config;
     server->rings = statsrelay_list_new();
     server->monitor_ring = statsrelay_list_new();
+
+    elide_t *elide;
+    elide_init(&elide, ELIDE_PERIOD);
+    server->elide = elide;
+
     {
         /*
          * 1. Load the primary shard map from the configuration, if present
@@ -773,6 +786,36 @@ static void stats_write_to_backend(const char *line,
     backend->relayed_lines++;
 }
 
+/**
+ * Check and report if this metric is elided or not.
+ * Returns: 0 if not, 1 if elided and should be skipped
+ */
+static int check_elide(elide_t* elide, char* full_name, double value) {
+    struct timeval now;
+    gettimeofday(&now, NULL);
+
+    if (value == 0) {
+        int res = elide_mark(elide, full_name, now);
+        if (res % ELIDE_PERIOD != 0) {
+            return 1;
+        }
+    } else {
+        elide_unmark(elide, full_name, now);
+    }
+    return 0;
+}
+
+/**
+ * Garbage collects items older than ELIDE_GC_PERIOD seconds, no more frequently than ELIDE_GC_PERIOD
+ */
+static int gc_elide(elide_t* elide) {
+    struct timeval cutoff;
+    gettimeofday(&cutoff, NULL);
+    cutoff.tv_sec -= ELIDE_GC_PERIOD;
+
+    return elide_gc(elide, cutoff);
+}
+
 static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bool send_to_monitor_cluster) {
     validate_parsed_result_t parsed_result;
     if (ss->config->enable_validation && ss->validator != NULL) {
@@ -850,6 +893,17 @@ static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bo
             continue;
         } else if (r == SAMPLER_SAMPLING) {
             continue;
+        }
+
+        if (parsed_result.type == METRIC_COUNTER || parsed_result.type == METRIC_GAUGE) {
+            int removed = gc_elide(ss->elide);
+            if (removed > 0) {
+                stats_log("stats: expired %d keys from the elision hashmap", removed);
+            }
+            if (check_elide(ss->elide, key_buffer, parsed_result.value) == 1) {
+                stats_log("stats: elided key: \"%s\" value: \"%f\"", key_buffer, parsed_result.value);
+                continue;
+            }
         }
         stats_write_to_backend(line, len, key_buffer, key_hash, key_len, group);
     }
@@ -1198,6 +1252,9 @@ void stats_server_destroy(stats_server_t *server) {
 
     server->num_backends = 0;
     server->num_monitor_backends = 0;
+
+    elide_destroy(server->elide);
+    server->elide = NULL;
 
     free(server);
 }

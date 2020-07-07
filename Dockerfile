@@ -7,4 +7,3 @@ COPY . /code
 WORKDIR /code
 RUN mkdir build && cd build && cmake .. && make -j 4
 RUN mkdir build-asan && cd build-asan && CC=clang-4.0 CFLAGS=-fsanitize=address LDFLAGS=-fsanitize=address  LD=clang-4.0 cmake .. && make VERBOSE=1 -j 20
-

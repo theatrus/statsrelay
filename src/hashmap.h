@@ -1,8 +1,6 @@
 #ifndef HASHMAP_H
 #define HASHMAP_H
 
-#include "./log.h"
-
 enum {
     HASHMAP_ITER_DELETE = -1,
     HASHMAP_ITER_CONTINUE = 0,
@@ -35,6 +33,11 @@ int hashmap_destroy(hashmap *map);
 int hashmap_size(hashmap *map);
 
 /**
+ * Returns the max size of the hashmap in terms of slots
+ */
+int hashmap_tablesize(hashmap *map);
+
+/**
  * Gets a value.
  * @arg key The key to look for. Must be null terminated.
  * @arg value Output. Set to the value of th key.
@@ -49,7 +52,7 @@ int hashmap_get(hashmap *map, const char *key, void **value);
  * @notes This method is not thread safe.
  * @arg key_len The key length
  * @arg value The value to set.
- * @arg metadata
+ * @arg metadata arbitrary information
  * 0 if updated, 1 if added.
  */
 int hashmap_put(hashmap *map, const char *key, void *value, void *metadata);
@@ -81,5 +84,18 @@ int hashmap_clear(hashmap *map);
  * @return 0 on success, or the return of the callback.
  */
 int hashmap_iter(hashmap *map, hashmap_callback cb, void *data);
+
+/**
+ * Iterates through the key/value pairs in a map, invoking a callback for
+ * each function. If the callback returns "0", the value is retained in the map.
+ * If 1 is returned, the value is removed from the map.
+ * This function does not shrink the table size of the map.
+ * This function expects the callback to remove memory for the value of the function.
+ * @arg map The hashmap to iterate over
+ * @arg cb The callback function to invoke
+ * @arg data Opaque handle passed to the callback
+ * @return 0 on success
+ */
+int hashmap_filter(hashmap *map, hashmap_callback cb, void *data);
 
 #endif
