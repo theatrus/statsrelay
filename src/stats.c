@@ -816,6 +816,7 @@ static int gc_elide(elide_t* elide) {
     struct timeval cutoff;
     gettimeofday(&cutoff, NULL);
     cutoff.tv_sec -= ELIDE_GC_PERIOD;
+    stats_log("gc_elide cutoff=%u", cutoff.tv_sec);
 
     return elide_gc(elide, cutoff);
 }

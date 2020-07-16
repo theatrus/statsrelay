@@ -74,13 +74,16 @@ int elide_gc(elide_t* e, struct timeval cutoff) {
     }
 
     // compare seconds only
+    stats_log("elide_gc last_gc=%u cutoff=%u", e->last_gc.tv_sec, cutoff.tv_sec);
     if (e->last_gc.tv_sec < cutoff.tv_sec) {
+        stats_log("elide_gc performing gc");
         struct cb_info cb = {
                 .cutoff = cutoff
         };
         int pre_count = hashmap_size(e->elide_map);
+        stats_log("elide hashmap before tablesize=%d size=%d", hashmap_tablesize(e->elide_map), hashmap_size(e->elide_map));
         hashmap_filter(e->elide_map, elide_gc_cb, (void *) &cb);
-        stats_log("elide hashmap tablesize=%d size=%d", hashmap_tablesize(e->elide_map), hashmap_size(e->elide_map));
+        stats_log("elide hashmap after tablesize=%d size=%d", hashmap_tablesize(e->elide_map), hashmap_size(e->elide_map));
 
         struct timeval now;
         gettimeofday(&now, NULL);
