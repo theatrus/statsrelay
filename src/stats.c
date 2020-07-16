@@ -20,7 +20,7 @@
 const int ELIDE_PERIOD = 10;
 
 // entries older than this in seconds will be removed from the elision hashmap
-const int ELIDE_GC_PERIOD = 60*1;
+const int ELIDE_GC_PERIOD = 60*15;
 
 // Forward declare
 static void stats_write_to_backend(const char *line,
@@ -816,7 +816,6 @@ static int gc_elide(elide_t* elide) {
     struct timeval cutoff;
     gettimeofday(&cutoff, NULL);
     cutoff.tv_sec -= ELIDE_GC_PERIOD;
-    stats_log("gc_elide cutoff=%u", cutoff.tv_sec);
 
     return elide_gc(elide, cutoff);
 }
