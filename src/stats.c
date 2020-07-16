@@ -20,7 +20,7 @@
 const int ELIDE_PERIOD = 10;
 
 // entries older than this in seconds will be removed from the elision hashmap
-const int ELIDE_GC_PERIOD = 60*15;
+const int ELIDE_GC_PERIOD = 60*1;
 
 // Forward declare
 static void stats_write_to_backend(const char *line,

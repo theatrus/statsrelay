@@ -80,6 +80,7 @@ int elide_gc(elide_t* e, struct timeval cutoff) {
         };
         int pre_count = hashmap_size(e->elide_map);
         hashmap_filter(e->elide_map, elide_gc_cb, (void *) &cb);
+        stats_log("elide hashmap tablesize=%d size=%d", hashmap_tablesize(e->elide_map), hashmap_size(e->elide_map));
 
         struct timeval now;
         gettimeofday(&now, NULL);

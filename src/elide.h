@@ -2,6 +2,7 @@
 #define STATSRELAY_ELIDE_H
 
 #include "hashmap.h"
+#include "log.h"
 
 typedef struct {
     /* Generations is the number of squential 0 values */
