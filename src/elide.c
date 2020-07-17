@@ -9,6 +9,9 @@ int elide_init(elide_t** e, int skip) {
     elide_t* el = malloc(sizeof(elide_t));
     int res = hashmap_init(0, &el->elide_map);
     el->skip = skip;
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    el->last_gc = now;
     *e = el;
     return res;
 }
@@ -65,14 +68,6 @@ static int elide_gc_cb(void* data, const char *key, void* value, void *metadata)
 }
 
 int elide_gc(elide_t* e, struct timeval cutoff) {
-    // initialize last_gc with now, if never called
-    if (e->last_gc.tv_sec == 0) {
-        struct timeval now;
-        gettimeofday(&now, NULL);
-        e->last_gc = now;
-        return 0;
-    }
-
     // compare seconds only
     if (e->last_gc.tv_sec < cutoff.tv_sec) {
         struct cb_info cb = {
@@ -80,6 +75,7 @@ int elide_gc(elide_t* e, struct timeval cutoff) {
         };
         int pre_count = hashmap_size(e->elide_map);
         hashmap_filter(e->elide_map, elide_gc_cb, (void *) &cb);
+        stats_log("gc complete, hashmap tablesize=%d size=%d", hashmap_tablesize(e->elide_map), hashmap_size(e->elide_map));
 
         struct timeval now;
         gettimeofday(&now, NULL);
