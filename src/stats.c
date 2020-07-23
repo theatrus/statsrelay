@@ -19,8 +19,8 @@
 // after sampling, up to <ELIDE_PERIOD> consecutive 0s will be skipped
 const int ELIDE_PERIOD = 10;
 
-// entries older than this in seconds will be removed from the elision hashmap
-const int ELIDE_GC_PERIOD = 60*15;
+// Entries older than this in seconds will be removed from the elision hashmap. -1 disables GC.
+const int ELIDE_GC_PERIOD = -1;
 
 // Forward declare
 static void stats_write_to_backend(const char *line,
@@ -813,6 +813,10 @@ static int check_elide(elide_t* elide, char* full_name, double value) {
  * Garbage collects items older than ELIDE_GC_PERIOD seconds, no more frequently than ELIDE_GC_PERIOD
  */
 static int gc_elide(elide_t* elide) {
+    if (ELIDE_GC_PERIOD < 0) {
+        return 0;
+    }
+
     struct timeval cutoff;
     gettimeofday(&cutoff, NULL);
     cutoff.tv_sec -= ELIDE_GC_PERIOD;
