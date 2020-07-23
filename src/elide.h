@@ -1,6 +1,7 @@
 #ifndef STATSRELAY_ELIDE_H
 #define STATSRELAY_ELIDE_H
 
+#include <ev.h>
 #include "hashmap.h"
 #include "log.h"
 
@@ -13,7 +14,9 @@ typedef struct {
 typedef struct {
     hashmap *elide_map;
     int skip;
-    struct timeval last_gc;
+    int gc_frequency;
+    int gc_ttl;
+    ev_timer gc_timer;
 } elide_t;
 
 /**
@@ -22,7 +25,7 @@ typedef struct {
  *  skip: generation addition. All reported generations will
  *        returned with this value added. Used to introduce jitter
  */
-extern int elide_init(elide_t** e, int skip);
+extern int elide_init(elide_t** e, int skip, int gc_frequency, int gc_ttl);
 
 /**
  * Record and report on an eliding value. The return value is
