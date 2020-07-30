@@ -382,10 +382,12 @@ int hashmap_clear(hashmap *map) {
 }
 
 /**
- * Iterates through the key/value pairs in the map,
- * invoking a callback for each. The call back gets a
- * key, value for each and returns an integer stop value.
- * If the callback returns 1, then the iteration stops.
+ * Iterates through the key/value pairs in the map, invoking a
+ * callback for each. The call back gets a key, value for each and
+ * returns an integer stop value.  If the callback returns
+ * HASHMAP_ITER_STOP, then the iteration stops. The current key can be
+ * removed by return HASHMAP_ITER_DELETE.
+ *
  * @arg map The hashmap to iterate over
  * @arg cb The callback function to invoke
  * @arg data Opaque handle passed to the callback
@@ -393,13 +395,64 @@ int hashmap_clear(hashmap *map) {
  */
 int hashmap_iter(hashmap *map, hashmap_callback cb, void *data) {
     hashmap_entry *entry;
+
     int should_break = 0;
-    for (int i=0; i < map->table_size && !should_break; i++) {
-        entry = map->table+i;
-        while (entry && entry->key && !should_break) {
-            // Invoke the callback
-            should_break = cb(data, entry->key, entry->value, entry->metadata);
-            entry = entry->next;
+    for (int i = 0; i < map->table_size && should_break != 1; i++) {
+
+        hashmap_entry *last_entry = NULL;
+        entry = map->table + i;
+
+        while (entry != NULL && entry->key && !should_break) {
+
+            int cb_ret = cb(data, entry->key, entry->value, entry->metadata);
+            if (cb_ret == HASHMAP_ITER_DELETE) { /* Delete this node */
+                /* Free the key buffer */
+                free(entry->key);
+                entry->key = NULL;
+                /**
+                 * decrement item count to reflect delete completion
+                 */
+                map->count -= 1;
+
+                if (last_entry == NULL) {
+                    /* This is the first item in the table, we zip
+                     * left to right and copy next to the first slot */
+                    if (entry->next) {
+                        hashmap_entry *n = entry->next;
+                        entry->key = n->key;
+                        entry->value = n->value;
+                        entry->next = n->next;
+                        entry->metadata = n->metadata;
+                        free(n);
+                        /* Do not record last_entry - we moved
+                         * everything one left, and could do so
+                         * again */
+
+                    } else {
+                        /* This is the only item in the chain, zero
+                         * the item slot with no zipping */
+                        entry->key = NULL;
+                        entry->value = NULL;
+                        entry->next = NULL;
+                        entry->metadata = NULL;
+                    }
+                } else {
+                    /* We are in the middle or end of a chain, remove
+                     * the element and advance forward one */
+                    last_entry->next = entry->next;
+                    free(entry);
+                    entry = last_entry->next;
+                    /* Do not move last_entry - it didn't change */
+                }
+            } else {
+                /* No delete, move forward in the list */
+                should_break = cb_ret;
+                /* Move last_entry to allow removals in the list */
+                last_entry = entry;
+                entry = entry->next;
+            }
+
+
         }
     }
     return should_break;

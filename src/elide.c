@@ -41,8 +41,7 @@ int elide_unmark(elide_t* e, char *key, struct timeval now) {
 }
 
 static int elide_delete_cb(void* data, const char *key, void* value, void *metadata) {
-    free(value);
-    return 0;
+    return HASHMAP_ITER_DELETE;
 }
 
 int elide_destroy(elide_t* e) {
