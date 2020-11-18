@@ -903,7 +903,7 @@ static int stats_relay_line(const char *line, size_t len, stats_server_t *ss, bo
             continue;
         }
 
-        if (parsed_result.type == METRIC_COUNTER || parsed_result.type == METRIC_GAUGE) {
+        if (parsed_result.type == METRIC_COUNTER) {
             int removed = gc_elide(ss->elide);
             if (removed > 0) {
                 stats_log("stats: expired %d keys from the elision hashmap", removed);
