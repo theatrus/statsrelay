@@ -1,5 +1,6 @@
 pub mod backends;
 pub mod config;
+pub mod metrics;
 pub mod sampler;
 pub mod shard;
 pub mod statsd;

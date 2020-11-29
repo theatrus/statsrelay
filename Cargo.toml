@@ -25,8 +25,9 @@ harness = false
 [dependencies]
 murmur3 = "0.5"
 tokio = { version = "0.3", features = ["full", "parking_lot"] }
-futures = "0.3"
+tokio-compat-02 = "0.1"
 hyper = "0.13"
+futures = "0.3"
 structopt = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -35,8 +36,6 @@ anyhow = "1.0"
 thiserror = "1.0"
 memchr = "2"
 stream-cancel = "0.7"
-crossbeam = "0.8"
-crossbeam-utils = "0.8"
 bytes = "0.6"
 parking_lot = "0.11"
 regex = "1"
