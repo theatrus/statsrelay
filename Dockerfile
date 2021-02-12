@@ -1,4 +1,4 @@
-FROM fedora:32
+FROM fedora:33
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
 ENV PATH="$PATH:$HOME/.cargo/bin"
