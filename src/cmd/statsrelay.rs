@@ -1,6 +1,10 @@
 use anyhow::Context;
+use futures::StreamExt;
 use stream_cancel::Tripwire;
 use structopt::StructOpt;
+
+use std::collections::HashSet;
+
 use tokio::runtime;
 use tokio::select;
 use tokio::signal::unix::{signal, SignalKind};
@@ -8,7 +12,11 @@ use tokio::signal::unix::{signal, SignalKind};
 use env_logger::Env;
 use log::{debug, error, info};
 
+use statsrelay::admin;
 use statsrelay::backends;
+use statsrelay::config;
+use statsrelay::discovery;
+use statsrelay::stats;
 use statsrelay::statsd_server;
 
 #[derive(StructOpt, Debug)]
@@ -30,11 +38,17 @@ fn main() -> anyhow::Result<()> {
         statsrelay::built_info::GIT_COMMIT_HASH.unwrap_or("unknown")
     );
 
-    let config = statsrelay::config::load_legacy_config(opts.config.as_ref())
+    let config = statsrelay::config::load(opts.config.as_ref())
         .with_context(|| format!("can't load config file from {}", opts.config))?;
     info!("loaded config file {}", opts.config);
     debug!("bind address: {}", config.statsd.bind);
 
+    let collector = stats::Collector::default();
+
+    if let Some(admin) = &config.admin {
+        admin::spawn_admin_server(admin.port, collector.clone());
+        info!("spawned admin server on port {}", admin.port);
+    }
     debug!("installed metrics receiver");
 
     let mut builder = match opts.threaded {
@@ -45,24 +59,15 @@ fn main() -> anyhow::Result<()> {
     let runtime = builder.enable_all().build().unwrap();
     info!("tokio runtime built, threaded: {}", opts.threaded);
 
+    let scope = collector.scope("statsrelay");
+
     runtime.block_on(async move {
-        let backends = backends::Backends::new();
-        // Load the default backend set, even if its zero sized, to avoid index
-        // errors later
-        if let Err(e) = backends.add_statsd_backend(
-            &statsrelay::config::StatsdDuplicateTo::from_shards(config.statsd.shard_map.clone()),
-        ) {
-            error!("invalid backend created {}", e);
-            return;
-        }
-        for duplicate_to_block in config.statsd.duplicate_to.map_or(vec![], |f| f) {
-            if let Err(e) = backends.add_statsd_backend(&duplicate_to_block) {
-                error!("invalid backend created {}", e);
-                return;
-            }
-        }
+        let backends = backends::Backends::new(scope.scope("backends"));
+
+        let backend_reloads = scope.counter("backend_reloads").unwrap();
+
         let (sender, tripwire) = Tripwire::new();
-        let run = statsd_server::run(tripwire, config.statsd.bind.clone(), backends.clone());
+        let run = statsd_server::run(scope.scope("statsd_server"), tripwire, config.statsd.bind.clone(), backends.clone());
 
         // Trap ctrl+c and sigterm messages and perform a clean shutdown
         let mut sigint = signal(SignalKind::interrupt()).unwrap();
@@ -77,11 +82,36 @@ fn main() -> anyhow::Result<()> {
 
         // Trap sighup to support manual file reloading
         let mut sighup = signal(SignalKind::hangup()).unwrap();
+        // This task is designed to asynchronously build backend configurations,
+        // which may in turn come from other data sources or discovery sources.
+        // This inherently races with bringing up servers, to the point where a
+        // server may not have any backends to dispatch to yet, if discovery is
+        // very slow. This is the intended state, as configuration of processors
+        // and any buffers should have already been performed.
+        //
+        // SIGHUP will attempt to reload backend configurations as well as any
+        // discovery changes.
         tokio::spawn(async move {
+            let dconfig = config.discovery.unwrap_or_default();
+            let discovery_cache = discovery::Cache::new();
+            let mut discovery_stream =
+                discovery::reflector(discovery_cache.clone(), discovery::as_stream(&dconfig));
             loop {
-                sighup.recv().await;
-                info!("reloading configuration and replacing backends");
-                reload_config_from_file(&backends, opts.config.as_ref()).await;
+                info!("loading configuration and updating backends");
+                backend_reloads.inc();
+                let config = load_backend_configs(&discovery_cache, &backends, opts.config.as_ref()).await.unwrap();
+                let dconfig = config.discovery.unwrap_or_default();
+
+                tokio::select! {
+                    _ = sighup.recv() => {
+                        info!("received sighup");
+                        discovery_stream = discovery::reflector(discovery_cache.clone(), discovery::as_stream(&dconfig));
+                        info!("reloaded discovery stream");
+                    }
+                    Some(event) = discovery_stream.next() => {
+                        info!("updating discovery for map {}", event.0);
+                    }
+                };
             }
         });
 
@@ -93,37 +123,43 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn reload_config_from_file(backends: &backends::Backends, path: &str) {
-    let config = match statsrelay::config::load_legacy_config(path)
+async fn load_backend_configs(
+    discovery_cache: &discovery::Cache,
+    backends: &backends::Backends,
+    path: &str,
+) -> anyhow::Result<config::Config> {
+    // Check if we have to load the configuration file
+    let config = match statsrelay::config::load(path)
         .with_context(|| format!("can't load config file from {}", path))
     {
         Err(e) => {
             error!("failed to reload configuration: {}", e);
-            return;
+            return Err(e).context("failed to reload configuration file");
         }
         Ok(ok) => ok,
     };
 
-    if let Err(e) = backends.replace_statsd_backend(
-        0,
-        &statsrelay::config::StatsdDuplicateTo::from_shards(config.statsd.shard_map.clone()),
-    ) {
-        error!("invalid backend created {}", e);
-    }
-    if let Some(duplicate) = config.statsd.duplicate_to {
-        for (idx, dp) in duplicate.iter().enumerate() {
-            if let Err(e) = backends.replace_statsd_backend(idx, dp) {
-                error!("failed to replace backend index {} error {}", idx, e);
-                continue;
-            }
-        }
-        if backends.len() > duplicate.len() {
-            for idx in duplicate.len() + 1..backends.len() {
-                if let Err(e) = backends.remove_statsd_backend(idx) {
-                    error!("failed to remove backend block {} with error {}", idx, e);
-                }
-            }
+    let duplicate = &config.statsd.backends;
+    for (name, dp) in duplicate.iter() {
+        let discovery_data = if let Some(discovery_name) = &dp.shard_map_source {
+            discovery_cache.get(discovery_name)
+        } else {
+            None
+        };
+        if let Err(e) = backends.replace_statsd_backend(name, dp, discovery_data.as_ref()) {
+            error!("failed to replace backend index {} error {}", name, e);
+            continue;
         }
     }
+    let existing_backends = backends.backend_names();
+    let config_backends: HashSet<String> = duplicate.keys().map(|s| s.clone()).collect();
+    let difference = existing_backends.difference(&config_backends);
+    for remove in difference {
+        if let Err(e) = backends.remove_statsd_backend(remove) {
+            error!("failed to remove backend {} with error {:?}", remove, e);
+        }
+    }
+
     info!("backends reloaded");
+    Ok(config)
 }
