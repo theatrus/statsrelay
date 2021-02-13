@@ -1,4 +1,4 @@
-use bytes::{BufMut, BytesMut, Bytes};
+use bytes::{BufMut, Bytes, BytesMut};
 use memchr::memchr;
 use statsdproto::statsd::StatsdPDU;
 use stream_cancel::{Trigger, Tripwire};
@@ -44,7 +44,7 @@ impl StatsdClient {
         };
         let eps = String::from(endpoint);
         let (ticker_sender, ticker_recv) = mpsc::channel::<bool>(1);
-        tokio::spawn(ticker(ticker_sender));
+        tokio::spawn(ticker(eps.clone(), ticker_sender));
         tokio::spawn(client_task(stats, eps, trip, recv, ticker_recv));
         StatsdClient {
             inner: Arc::new(inner),
@@ -139,6 +139,7 @@ async fn client_sender(
     loop {
         let mut buf = match recv.recv().await {
             None => {
+                info!("sender task {} exiting", endpoint);
                 return;
             }
             Some(p) => p,
@@ -154,6 +155,7 @@ async fn client_sender(
                         form_connection(stats.clone(), endpoint.as_str(), reconnect_tripwire).await;
                     if lazy_connect.is_none() {
                         // Early check to see if the tripwire is set and bail
+                        info!("sender task {} exiting", endpoint);
                         return;
                     }
                     lazy_connect.as_mut().unwrap()
@@ -183,8 +185,8 @@ async fn client_sender(
                 }
                 Err(e) => {
                     warn!(
-                        "write error {:?}, reforming a connection with this buffer",
-                        e
+                        "write error {} - {:?}, reforming a connection with this buffer",
+                        endpoint, e
                     );
                     trim_to_next_newline(&mut buf);
                     lazy_connect = None;
@@ -203,11 +205,14 @@ async fn client_sender(
 /// ticker is needed as opposed to a timeout() wrapper over a queue.recv, which
 /// does not reliably get woken by try_send. The upside of this we also form one
 /// less short lived timer, not that its really a major advantage.
-async fn ticker(sender: mpsc::Sender<bool>) {
+async fn ticker(endpoint: String, sender: mpsc::Sender<bool>) {
     loop {
         sleep(SEND_DELAY).await;
         match sender.send(true).await {
-            Err(_) => return,
+            Err(_) =>{
+                info!("ticker task {} exiting", endpoint);
+                return;
+            },
             Ok(_) => (),
         };
     }
@@ -243,7 +248,7 @@ async fn client_task(
             (Some(pdu), _) => {
                 let pdu_bytes = pdu.as_ref();
                 if buf.remaining_mut() < pdu_bytes.len() {
-                    buf.reserve(pdu_bytes.len()+10);
+                    buf.reserve(pdu_bytes.len() + 10);
                 }
                 buf.put(pdu_bytes);
                 buf.put(b"\n".as_ref());
@@ -257,6 +262,7 @@ async fn client_task(
             (None, false) => {
                 if buf.is_empty() {
                     // No more queue, no more bytes, exit
+                    info!("client task {} exiting", endpoint);
                     return;
                 }
             }
@@ -269,7 +275,10 @@ async fn client_task(
             }
         };
         match buf_sender.send(buf.freeze()).await {
-            Err(_e) => return,
+            Err(_e) => {
+                info!("client task {} exiting", endpoint);
+                return;
+            },
             Ok(_) => (),
         };
         buf = BytesMut::with_capacity(INITIAL_BUF_CAPACITY);

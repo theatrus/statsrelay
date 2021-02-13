@@ -1,3 +1,8 @@
+extern crate jemallocator;
+
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 use anyhow::Context;
 use futures::StreamExt;
 use stream_cancel::Tripwire;

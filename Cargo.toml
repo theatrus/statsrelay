@@ -51,6 +51,9 @@ env_logger = "0.8"
 # Internal stats
 prometheus = "0.11"
 
+# malloc
+jemallocator = "0.3.0"
+
 [dev-dependencies]
 tempfile = "3.1"
 

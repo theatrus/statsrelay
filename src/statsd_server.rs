@@ -20,6 +20,7 @@ use crate::backends::Backends;
 use crate::stats;
 
 const TCP_READ_TIMEOUT: Duration = Duration::from_secs(62);
+const READ_BUFFER: usize = 8192;
 
 struct UdpServer {
     shutdown_gate: Arc<AtomicBool>,
@@ -110,14 +111,14 @@ async fn client_handler(
     mut socket: TcpStream,
     backends: Backends,
 ) {
-    let mut buf = BytesMut::with_capacity(65535);
+    let mut buf = BytesMut::with_capacity(READ_BUFFER);
     let incoming_bytes = stats.counter("incoming_bytes").unwrap();
     let disconnects = stats.counter("disconnects").unwrap();
     let processed_lines = stats.counter("lines").unwrap();
 
     loop {
-        if buf.remaining_mut() < 65535 {
-            buf.reserve(65535);
+        if buf.remaining_mut() < READ_BUFFER {
+            buf.reserve(READ_BUFFER);
         }
         let result = select! {
             r = timeout(TCP_READ_TIMEOUT, socket.read_buf(&mut buf)) => {
