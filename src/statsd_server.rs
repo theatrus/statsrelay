@@ -14,7 +14,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::{info, warn, debug};
+use log::{debug, info, warn};
 
 use crate::backends::Backends;
 use crate::stats;
@@ -98,7 +98,12 @@ fn process_buffer_newlines(buf: &mut BytesMut) -> Vec<StatsdPDU> {
                 } else {
                     incoming.truncate(incoming.len() - 1);
                 }
-                StatsdPDU::new(incoming.freeze()).map(|f| ret.push(f));
+                let frozen = incoming.freeze();
+                if frozen == "status" {
+                    // Consume a line consisting of just the word status, and do not produce a PDU
+                    continue;
+                }
+                StatsdPDU::new(frozen).map(|f| ret.push(f));
             }
         };
     }
@@ -269,6 +274,22 @@ pub mod test {
             found += 1
         }
         assert_eq!(2, found);
+        assert!(b.split().as_ref() == b"hello2");
+    }
+
+    #[test]
+    fn test_process_buffer_status() {
+        let mut found = 0;
+        let mut b = BytesMut::new();
+        // Validate we don't consume newlines, but not a remnant
+        b.put_slice(b"status\r\nhello:1|c\nhello2");
+        let r = process_buffer_newlines(&mut b);
+        for w in r {
+            assert!(w.pdu_type() == b"c");
+            assert!(w.name() == b"hello");
+            found += 1
+        }
+        assert_eq!(1, found);
         assert!(b.split().as_ref() == b"hello2");
     }
 }
