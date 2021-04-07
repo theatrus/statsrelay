@@ -1,7 +1,7 @@
 use murmur3;
 use std::io::Cursor;
 
-use crate::statsdproto::PDU as StatsdPDU;
+use crate::statsd_proto::PDU as StatsdPDU;
 
 // HASHLIB_SEED same as the legacy statsrelay code base
 const HASHLIB_SEED: u32 = 0xaccd3d34;
@@ -77,25 +77,25 @@ pub mod test {
 
         assert_eq!(
             *ring.pick_from(statsrelay_compat_hash(
-                &StatsdPDU::new(Bytes::copy_from_slice(b"apple:1|c")).unwrap()
+                &StatsdPDU::parse(Bytes::copy_from_slice(b"apple:1|c")).unwrap()
             )),
             2
         );
         assert_eq!(
             *ring.pick_from(statsrelay_compat_hash(
-                &StatsdPDU::new(Bytes::copy_from_slice(b"banana:1|c")).unwrap()
+                &StatsdPDU::parse(Bytes::copy_from_slice(b"banana:1|c")).unwrap()
             )),
             3
         );
         assert_eq!(
             *ring.pick_from(statsrelay_compat_hash(
-                &StatsdPDU::new(Bytes::copy_from_slice(b"orange:1|c")).unwrap()
+                &StatsdPDU::parse(Bytes::copy_from_slice(b"orange:1|c")).unwrap()
             )),
             0
         );
         assert_eq!(
             *ring.pick_from(statsrelay_compat_hash(
-                &StatsdPDU::new(Bytes::copy_from_slice(b"lemon:1|c")).unwrap()
+                &StatsdPDU::parse(Bytes::copy_from_slice(b"lemon:1|c")).unwrap()
             )),
             1
         );

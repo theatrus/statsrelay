@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::stats;
-use crate::statsdproto::PDU as StatsdPDU;
+use crate::statsd_proto::PDU as StatsdPDU;
 
 use log::{info, warn};
 

@@ -45,6 +45,14 @@ pub enum ParseError {
     InvalidType,
     #[error("invalid tag")]
     InvalidTag,
+    #[error("overall invalid line - no structural elements found in parsing")]
+    InvalidLine,
+    #[error("more than one sample rate field found")]
+    RepeatedSampleRate,
+    #[error("more than one set of tags found")]
+    RepeatedTags,
+    #[error("unsupported extension field")]
+    UnsupportedExtensionField,
 }
 
 /// A Tag is a key:value pair of metric tags
@@ -62,9 +70,11 @@ pub trait Parsed {
     fn tags(&self) -> &[Tag];
 }
 
-/// Owned gives an owned structure which represents a parsed statsd protocol
-/// unit which owns all of its fields. When parsing, no canonicalization is
-/// performed by default.
+/// A structured and owned version of [`PDU`](PDU)
+///
+/// Gives an owned structure which represents a parsed statsd protocol unit
+/// which owns all of its fields. When parsing, no canonicalization is performed
+/// by default.
 #[derive(Debug, Clone)]
 pub struct Owned {
     name: Vec<u8>,
@@ -159,10 +169,12 @@ fn parse_tags(input: &[u8]) -> Result<Vec<Tag>, ParseError> {
     }
 }
 
-/// A PDU is an incoming protocol unit for statsd messages, commonly a
-/// single datagram or a line-delimitated message. This PDU type owns an
-/// incoming message and can offer references to protocol fields. It only
-/// performs limited parsing of the protocol unit.
+/// Protocol Data Unit of a statsd message, with byte range accessors
+///
+/// Incoming protocol unit for statsd messages, commonly a single datagram or a
+/// line-delimitated message. This PDU type owns an incoming message and can
+/// offer references to protocol fields. It only performs limited parsing of the
+/// protocol unit.
 #[derive(Debug, Clone)]
 pub struct PDU {
     underlying: Bytes,
@@ -202,9 +214,7 @@ impl PDU {
         self.underlying.as_ref()
     }
 
-    ///
     /// Return a clone of the PDU with a prefix and suffix attached to the statsd name
-    ///
     pub fn with_prefix_suffix(&self, prefix: &[u8], suffix: &[u8]) -> Self {
         let offset = suffix.len() + prefix.len();
 
@@ -230,18 +240,18 @@ impl PDU {
     /// offsets for the positions and lengths of various protocol fields for
     /// later access. No parsing or validation of values is done, so at a low
     /// level this can be used to pass through unknown types and protocols.
-    pub fn new(line: Bytes) -> Option<Self> {
+    pub fn parse(line: Bytes) -> Result<Self, ParseError> {
         let length = line.len();
         let mut value_index: usize = 0;
         // To support inner ':' symbols in a metric name (more common than you
         // think) we'll first find the index of the first type separator, and
         // then do a walk to find the last ':' symbol before that.
-        let type_index = memchr('|' as u8, &line)? + 1;
+        let type_index = memchr('|' as u8, &line).ok_or(ParseError::InvalidLine)? + 1;
 
         loop {
             let value_check_index = memchr(':' as u8, &line[value_index..type_index]);
             match (value_check_index, value_index) {
-                (None, x) if x <= 0 => return None,
+                (None, x) if x <= 0 => return Err(ParseError::InvalidType),
                 (None, _) => break,
                 _ => (),
             }
@@ -263,23 +273,23 @@ impl PDU {
             match line[index.unwrap() + 1] {
                 b'@' => {
                     if sample_rate_index.is_some() {
-                        return None;
+                        return Err(ParseError::RepeatedSampleRate);
                     }
                     sample_rate_index = index.map(|v| (v + 2, length));
                     tags_index = tags_index.map(|(v, _l)| (v, index.unwrap()));
                 }
                 b'#' => {
                     if tags_index.is_some() {
-                        return None;
+                        return Err(ParseError::RepeatedTags);
                     }
                     tags_index = index.map(|v| (v + 2, length));
                     sample_rate_index = sample_rate_index.map(|(v, _l)| (v, index.unwrap()));
                 }
-                _ => return None,
+                _ => return Err(ParseError::UnsupportedExtensionField),
             }
             scan_index = index.unwrap() + 1;
         }
-        Some(PDU {
+        Ok(PDU {
             underlying: line,
             value_index,
             type_index,
@@ -291,9 +301,8 @@ impl PDU {
 }
 
 #[cfg(test)]
-pub mod atest {
+pub mod test {
     use super::*;
-    use anyhow::anyhow;
 
     #[test]
     fn parse_pdus() -> anyhow::Result<()> {
@@ -305,14 +314,14 @@ pub mod atest {
         ];
         for buf in valid {
             println!("{}", String::from_utf8(buf.clone())?);
-            PDU::new(buf.into()).ok_or(anyhow!("no pdu"))?;
+            PDU::parse(buf.into())?;
         }
         Ok(())
     }
 
     #[test]
     fn simple_pdu() {
-        let pdu = PDU::new(Bytes::from_static(b"foo.car:bar:3.0|c")).unwrap();
+        let pdu = PDU::parse(Bytes::from_static(b"foo.car:bar:3.0|c")).unwrap();
         assert_eq!(pdu.name(), b"foo.car:bar");
         assert_eq!(pdu.value(), b"3.0");
         assert_eq!(pdu.pdu_type(), b"c")
@@ -320,7 +329,7 @@ pub mod atest {
 
     #[test]
     fn tagged_pdu() {
-        let pdu = PDU::new(Bytes::from_static(b"foo.bar:3|c|@1.0|#tags")).unwrap();
+        let pdu = PDU::parse(Bytes::from_static(b"foo.bar:3|c|@1.0|#tags")).unwrap();
         assert_eq!(pdu.name(), b"foo.bar");
         assert_eq!(pdu.value(), b"3");
         assert_eq!(pdu.pdu_type(), b"c");
@@ -330,7 +339,7 @@ pub mod atest {
 
     #[test]
     fn tagged_pdu_reverse() {
-        let pdu = PDU::new(Bytes::from_static(b"foo.bar:3|c|#tags|@1.0")).unwrap();
+        let pdu = PDU::parse(Bytes::from_static(b"foo.bar:3|c|#tags|@1.0")).unwrap();
         assert_eq!(pdu.name(), b"foo.bar");
         assert_eq!(pdu.value(), b"3");
         assert_eq!(pdu.pdu_type(), b"c");
@@ -340,7 +349,7 @@ pub mod atest {
 
     #[test]
     fn prefix_suffix_test() {
-        let opdu = PDU::new(Bytes::from_static(b"foo.bar:3|c|#tags|@1.0")).unwrap();
+        let opdu = PDU::parse(Bytes::from_static(b"foo.bar:3|c|#tags|@1.0")).unwrap();
         let pdu = opdu.with_prefix_suffix(b"aa", b"bbb");
         assert_eq!(pdu.name(), b"aafoo.barbbb");
         assert_eq!(pdu.value(), b"3");
@@ -394,7 +403,7 @@ pub mod atest {
 
     #[test]
     fn parsed_simple() {
-        let pdu = PDU::new(Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0")).unwrap();
+        let pdu = PDU::parse(Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0")).unwrap();
         let parsed: Owned = pdu.try_into().unwrap();
         assert_eq!(parsed.value, 3.0);
         assert_eq!(parsed.name, b"foo.bar");

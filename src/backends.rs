@@ -11,7 +11,7 @@ use crate::discovery;
 use crate::shard::{statsrelay_compat_hash, Ring};
 use crate::stats;
 use crate::statsd_client::StatsdClient;
-use crate::statsdproto::PDU as StatsdPDU;
+use crate::statsd_proto::PDU as StatsdPDU;
 
 use log::warn;
 
