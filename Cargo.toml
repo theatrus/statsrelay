@@ -51,7 +51,12 @@ prometheus = "0.11"
 # malloc
 jemallocator = "0.3.0"
 
+[[bench]]
+name = "statsd_benchmark"
+harness = false
+
 [dev-dependencies]
+criterion = { version = "0.3", features = ["html_reports"] }
 tempfile = "3.1"
 
 [build-dependencies]
