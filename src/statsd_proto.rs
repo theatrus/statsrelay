@@ -1,6 +1,6 @@
 use bytes::BufMut;
 use bytes::Bytes;
-use memchr::{memchr, memchr2};
+use memchr::{memchr};
 use thiserror::Error;
 
 use std::{
@@ -131,41 +131,36 @@ impl TryFrom<PDU> for Owned {
 }
 
 fn parse_tags(input: &[u8]) -> Result<Vec<Tag>, ParseError> {
-    // Its impossible to have a tag of less than "a:b", also short circuit for
-    // no tags
     match input.len() {
         len if len == 0 => return Ok(vec![]),
-        len if len < 3 => return Err(ParseError::InvalidTag),
         _ => (),
     };
 
     let mut tags: Vec<Tag> = Vec::new();
     let mut scan = input;
     loop {
-        let key_index_end = match memchr2(b':', b',', &scan[0..]) {
-            Some(i) if scan[i] == b':' => i,
-            Some(_) => return Err(ParseError::InvalidTag),
-            None => return Err(ParseError::InvalidTag),
+        let tag_index_end = match memchr(b',', scan) {
+            None => scan.len(),
+            Some(i) => i,
         };
-        let name = &scan[0..key_index_end];
-        scan = &scan[key_index_end + 1..];
-        match memchr2(b':', b',', scan) {
+        let tag_scan = &scan[0..tag_index_end];
+        match memchr(b':', tag_scan) {
+            // Value-less tag, consume the name and continue
             None => {
-                tags.push(Tag {
-                    name: name.to_vec(),
-                    value: scan.to_vec(),
-                });
-                return Ok(tags);
+                tags.push(Tag{
+                    name: tag_scan.to_vec(),
+                    value: vec![],
+                })
             }
-            Some(value_index_end) if scan[value_index_end] == b',' => {
-                tags.push(Tag {
-                    name: name.to_vec(),
-                    value: scan[0..value_index_end].to_vec(),
-                });
-                scan = &scan[value_index_end + 1..];
+            Some(value_start) => {
+                tags.push(Tag{
+                    name: tag_scan[0..value_start].to_vec(),
+                    value: tag_scan[value_start+1..].to_vec(),
+                })
             }
-            Some(_) => return Err(ParseError::InvalidTag),
-        };
+        }
+        if tag_index_end == scan.len() { return Ok(tags); }
+        scan = &scan[tag_index_end+1..];
     }
 }
 
@@ -368,10 +363,22 @@ pub mod test {
     }
 
     #[test]
-    fn test_parse_tag_invalid() {
+    fn test_parse_tag_naked_single() {
         let tag_v = b"name";
-        let r = parse_tags(tag_v);
-        assert!(r.is_err());
+        let r = parse_tags(tag_v).unwrap();
+        assert_eq!(r[0].name, b"name");
+        assert_eq!(r[0].value, b"");
+    }
+
+    #[test]
+    fn test_parse_tag_complex_name() {
+        let tag_v = b"name:value:value:value,name2:value2:value2:value2";
+        let r = parse_tags(tag_v).unwrap();
+        assert!(r.len() == 2);
+        assert_eq!(r[0].name, b"name");
+        assert_eq!(r[0].value, b"value:value:value");
+        assert_eq!(r[1].name, b"name2");
+        assert_eq!(r[1].value, b"value2:value2:value2");
     }
 
     #[test]
@@ -395,10 +402,16 @@ pub mod test {
     }
 
     #[test]
-    fn test_parse_tag_multiple_invalid() {
+    fn test_parse_tag_multiple_short() {
         let tag_v = b"name:value,name2,name3:value3";
-        let p = parse_tags(tag_v);
-        assert!(p.is_err());
+        let r = parse_tags(tag_v).unwrap();
+        assert!(r.len() == 3);
+        assert_eq!(r[0].name, b"name");
+        assert_eq!(r[0].value, b"value");
+        assert_eq!(r[1].name, b"name2");
+        assert_eq!(r[1].value, b"");
+        assert_eq!(r[2].name, b"name3");
+        assert_eq!(r[2].value, b"value3");
     }
 
     #[test]
