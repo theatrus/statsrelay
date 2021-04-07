@@ -8,7 +8,7 @@ use std::{
     vec,
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Type {
     Counter,
     Timer,
@@ -24,12 +24,12 @@ impl TryFrom<&[u8]> for Type {
         if value.len() < 1 && value.len() > 2 {
             return Err(ParseError::InvalidType);
         }
-        match value[0] {
-            b'c' => Ok(Type::Counter),
-            b'm' => Ok(Type::Timer),
-            b'g' => Ok(Type::Gauge),
-            b'G' => Ok(Type::DirectGauge),
-            b's' => Ok(Type::Set),
+        match value {
+            b"c" => Ok(Type::Counter),
+            b"ms" => Ok(Type::Timer),
+            b"g" => Ok(Type::Gauge),
+            b"G" => Ok(Type::DirectGauge),
+            b"s" => Ok(Type::Set),
             _ => Err(ParseError::InvalidType),
         }
     }
@@ -54,16 +54,70 @@ pub struct Tag {
     value: Vec<u8>,
 }
 
-/// Parsed gives an owned structure which represents a parsed statsd protocol
+pub trait Parsed {
+    fn name(&self) -> &[u8];
+    fn metric_type(&self) -> Type;
+    fn value(&self) -> f64;
+    fn sample_rate(&self) -> Option<f64>;
+    fn tags(&self) -> &[Tag];
+}
+
+/// Owned gives an owned structure which represents a parsed statsd protocol
 /// unit which owns all of its fields. When parsing, no canonicalization is
 /// performed by default.
 #[derive(Debug, Clone)]
-pub struct Parsed {
+pub struct Owned {
     name: Vec<u8>,
     mtype: Type,
     value: f64,
     sample_rate: Option<f64>,
     tags: Vec<Tag>,
+}
+
+impl Parsed for Owned {
+    fn name(&self) -> &[u8] {
+        self.name.as_ref()
+    }
+    fn metric_type(&self) -> Type {
+        self.mtype
+    }
+    fn value(&self) -> f64 {
+        self.value
+    }
+    fn sample_rate(&self) -> Option<f64> {
+        self.sample_rate
+    }
+    fn tags(&self) -> &[Tag] {
+        self.tags.as_slice()
+    }
+}
+
+impl TryFrom<PDU> for Owned {
+    type Error = ParseError;
+
+    fn try_from(pdu: PDU) -> Result<Self, Self::Error> {
+        let value = match lexical::parse::<f64, _>(pdu.value()) {
+            Ok(v) => v,
+            Err(_) => return Err(ParseError::InvalidValue),
+        };
+        let sample_rate = pdu
+            .sample_rate()
+            .map(|sr| match lexical::parse::<f64, _>(sr) {
+                Ok(v) if (v > 0.0 && v <= 1.0) => Ok(v),
+                Ok(_) => Err(ParseError::InvalidSampleRate),
+                Err(_) => Err(ParseError::InvalidSampleRate),
+            })
+            .transpose()?;
+        let mtype: Type = pdu.pdu_type().try_into()?;
+        let tags = pdu.tags().map(|v| parse_tags(v)).transpose()?;
+        Ok(Owned {
+            name: pdu.name().to_vec(),
+            mtype: mtype,
+            value: value,
+            sample_rate: sample_rate,
+            tags: tags.unwrap_or_default(),
+        })
+    }
 }
 
 fn parse_tags(input: &[u8]) -> Result<Vec<Tag>, ParseError> {
@@ -102,34 +156,6 @@ fn parse_tags(input: &[u8]) -> Result<Vec<Tag>, ParseError> {
             }
             Some(_) => return Err(ParseError::InvalidTag),
         };
-    }
-}
-
-impl TryFrom<PDU> for Parsed {
-    type Error = ParseError;
-
-    fn try_from(pdu: PDU) -> Result<Self, Self::Error> {
-        let value = match lexical::parse::<f64, _>(pdu.value()) {
-            Ok(v) => v,
-            Err(_) => return Err(ParseError::InvalidValue),
-        };
-        let sample_rate = pdu
-            .sample_rate()
-            .map(|sr| match lexical::parse::<f64, _>(sr) {
-                Ok(v) if (v > 0.0 && v <= 1.0) => Ok(v),
-                Ok(_) => Err(ParseError::InvalidSampleRate),
-                Err(_) => Err(ParseError::InvalidSampleRate),
-            })
-            .transpose()?;
-        let mtype: Type = pdu.pdu_type().try_into()?;
-        let tags = pdu.tags().map(|v| parse_tags(v)).transpose()?;
-        Ok(Parsed {
-            name: pdu.name().to_vec(),
-            mtype: mtype,
-            value: value,
-            sample_rate: sample_rate,
-            tags: tags.unwrap_or_default(),
-        })
     }
 }
 
@@ -369,7 +395,7 @@ pub mod atest {
     #[test]
     fn parsed_simple() {
         let pdu = PDU::new(Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0")).unwrap();
-        let parsed: Parsed = pdu.try_into().unwrap();
+        let parsed: Owned = pdu.try_into().unwrap();
         assert_eq!(parsed.value, 3.0);
         assert_eq!(parsed.name, b"foo.bar");
         assert_eq!(parsed.mtype, Type::Counter);
