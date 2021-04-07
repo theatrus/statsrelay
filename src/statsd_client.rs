@@ -1,6 +1,5 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use memchr::memchr;
-use statsdproto::statsd::StatsdPDU;
 use stream_cancel::{Trigger, Tripwire};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -12,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::stats;
+use crate::statsdproto::PDU as StatsdPDU;
 
 use log::{info, warn};
 

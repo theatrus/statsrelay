@@ -1,7 +1,7 @@
 use murmur3;
 use std::io::Cursor;
 
-use statsdproto::statsd::StatsdPDU;
+use crate::statsdproto::PDU as StatsdPDU;
 
 // HASHLIB_SEED same as the legacy statsrelay code base
 const HASHLIB_SEED: u32 = 0xaccd3d34;

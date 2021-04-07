@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 use regex::bytes::RegexSet;
-use statsdproto::statsd::StatsdPDU;
 use thiserror::Error;
 
 use crate::config;
@@ -12,6 +11,7 @@ use crate::discovery;
 use crate::shard::{statsrelay_compat_hash, Ring};
 use crate::stats;
 use crate::statsd_client::StatsdClient;
+use crate::statsdproto::PDU as StatsdPDU;
 
 use log::warn;
 
