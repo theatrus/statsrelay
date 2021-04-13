@@ -1,9 +1,10 @@
 use bytes::BufMut;
 use bytes::Bytes;
-use memchr::{memchr};
+use memchr::memchr;
 use thiserror::Error;
 
 use std::{
+    cmp::Ordering,
     convert::{TryFrom, TryInto},
     vec,
 };
@@ -35,6 +36,18 @@ impl TryFrom<&[u8]> for Type {
     }
 }
 
+impl From<Type> for &[u8] {
+    fn from(input: Type) -> Self {
+        match input {
+            Type::Counter => b"c",
+            Type::DirectGauge => b"G",
+            Type::Gauge => b"g",
+            Type::Timer => b"ms",
+            Type::Set => b"s",
+        }
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum ParseError {
     #[error("invalid parsed value")]
@@ -55,11 +68,29 @@ pub enum ParseError {
     UnsupportedExtensionField,
 }
 
-/// A Tag is a key:value pair of metric tags
-#[derive(Debug, Clone, PartialEq, PartialOrd)]
+/// Set of key/value fields for a tag.
+#[derive(Debug, Clone, Eq)]
 pub struct Tag {
     name: Vec<u8>,
     value: Vec<u8>,
+}
+
+impl Ord for Tag {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.name.cmp(&other.name)
+    }
+}
+
+impl PartialOrd for Tag {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.name.partial_cmp(&other.name)
+    }
+}
+
+impl PartialEq for Tag {
+    fn eq(&self, other: &Self) -> bool {
+        return self.name == other.name;
+    }
 }
 
 pub trait Parsed {
@@ -75,7 +106,7 @@ pub trait Parsed {
 /// Gives an owned structure which represents a parsed statsd protocol unit
 /// which owns all of its fields. When parsing, no canonicalization is performed
 /// by default.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Owned {
     name: Vec<u8>,
     mtype: Type,
@@ -105,7 +136,15 @@ impl Parsed for Owned {
 impl TryFrom<PDU> for Owned {
     type Error = ParseError;
 
-    fn try_from(pdu: PDU) -> Result<Self, Self::Error> {
+    fn try_from(value: PDU) -> Result<Self, Self::Error> {
+        (&value).try_into()
+    }
+}
+
+impl TryFrom<&PDU> for Owned {
+    type Error = ParseError;
+
+    fn try_from(pdu: &PDU) -> Result<Self, Self::Error> {
         let value = match lexical::parse::<f64, _>(pdu.value()) {
             Ok(v) => v,
             Err(_) => return Err(ParseError::InvalidValue),
@@ -114,8 +153,7 @@ impl TryFrom<PDU> for Owned {
             .sample_rate()
             .map(|sr| match lexical::parse::<f64, _>(sr) {
                 Ok(v) if (v > 0.0 && v <= 1.0) => Ok(v),
-                Ok(_) => Err(ParseError::InvalidSampleRate),
-                Err(_) => Err(ParseError::InvalidSampleRate),
+                _ => Err(ParseError::InvalidSampleRate),
             })
             .transpose()?;
         let mtype: Type = pdu.pdu_type().try_into()?;
@@ -127,6 +165,89 @@ impl TryFrom<PDU> for Owned {
             sample_rate: sample_rate,
             tags: tags.unwrap_or_default(),
         })
+    }
+}
+
+impl From<Owned> for PDU {
+    fn from(input: Owned) -> Self {
+        (&input).into()
+    }
+}
+
+impl From<&Owned> for PDU {
+    fn from(input: &Owned) -> Self {
+        let mut bytes = Vec::with_capacity(input.name.len() + (input.tags.len() * 64) + 64);
+
+        bytes.extend(&input.name);
+        bytes.push(b':');
+        let value_index = bytes.len();
+        bytes.extend(lexical::to_string(input.value).as_bytes());
+        bytes.push(b'|');
+        let type_index = bytes.len();
+        bytes.extend_from_slice(input.mtype.into());
+        let type_index_end = bytes.len();
+        let sample_rate_index = if let Some(sr) = input.sample_rate {
+            bytes.extend_from_slice(b"|@");
+            let start = bytes.len();
+            bytes.extend(lexical::to_string(sr).as_bytes());
+            let end = bytes.len();
+            Some((start, end))
+        } else {
+            None
+        };
+
+        let tags_index = if input.tags.len() > 0 {
+            bytes.extend_from_slice(b"|#");
+            let start = bytes.len();
+            let mut peek = input.tags.iter().peekable();
+            while let Some(tag) = peek.next() {
+                bytes.extend(&tag.name);
+                bytes.push(b':');
+                bytes.extend(&tag.value);
+                if let Some(_) = peek.peek() {
+                    bytes.push(b',');
+                }
+            }
+            Some((start, bytes.len()))
+        } else {
+            None
+        };
+        PDU {
+            underlying: Bytes::from(bytes),
+            value_index: value_index,
+            type_index: type_index,
+            type_index_end: type_index_end,
+            sample_rate_index: sample_rate_index,
+            tags_index: tags_index,
+        }
+    }
+}
+
+pub mod convert {
+    use super::*;
+    /// Convert from external tags to internal tags. Does not check for
+    /// collisions of existing inline tags with the newly generated inline tags.
+    pub fn to_inline_tags(mut input: Owned) -> Owned {
+        if input.tags.len() == 0 {
+            return input;
+        }
+        input.tags.sort();
+        let mut name = input.name;
+        // Estimate on tag size without iterating through all actual tags
+        name.reserve(input.tags.len() * 64);
+        for tag in input.tags.drain(..) {
+            name.extend_from_slice(b".__");
+            name.extend(tag.name);
+            name.extend_from_slice(b"=");
+            name.extend(tag.value);
+        }
+        Owned {
+            name: name,
+            mtype: input.mtype,
+            value: input.value,
+            sample_rate: input.sample_rate,
+            tags: vec![],
+        }
     }
 }
 
@@ -146,21 +267,19 @@ fn parse_tags(input: &[u8]) -> Result<Vec<Tag>, ParseError> {
         let tag_scan = &scan[0..tag_index_end];
         match memchr(b':', tag_scan) {
             // Value-less tag, consume the name and continue
-            None => {
-                tags.push(Tag{
-                    name: tag_scan.to_vec(),
-                    value: vec![],
-                })
-            }
-            Some(value_start) => {
-                tags.push(Tag{
-                    name: tag_scan[0..value_start].to_vec(),
-                    value: tag_scan[value_start+1..].to_vec(),
-                })
-            }
+            None => tags.push(Tag {
+                name: tag_scan.to_vec(),
+                value: vec![],
+            }),
+            Some(value_start) => tags.push(Tag {
+                name: tag_scan[0..value_start].to_vec(),
+                value: tag_scan[value_start + 1..].to_vec(),
+            }),
         }
-        if tag_index_end == scan.len() { return Ok(tags); }
-        scan = &scan[tag_index_end+1..];
+        if tag_index_end == scan.len() {
+            return Ok(tags);
+        }
+        scan = &scan[tag_index_end + 1..];
     }
 }
 
@@ -170,7 +289,7 @@ fn parse_tags(input: &[u8]) -> Result<Vec<Tag>, ParseError> {
 /// line-delimitated message. This PDU type owns an incoming message and can
 /// offer references to protocol fields. It only performs limited parsing of the
 /// protocol unit.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PDU {
     underlying: Bytes,
     value_index: usize,
@@ -417,7 +536,7 @@ pub mod test {
     #[test]
     fn parsed_simple() {
         let pdu = PDU::parse(Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0")).unwrap();
-        let parsed: Owned = pdu.try_into().unwrap();
+        let parsed: Owned = (&pdu).try_into().unwrap();
         assert_eq!(parsed.value, 3.0);
         assert_eq!(parsed.name, b"foo.bar");
         assert_eq!(parsed.mtype, Type::Counter);
@@ -429,5 +548,32 @@ pub mod test {
                 value: b"value".to_vec()
             }
         );
+    }
+
+    #[test]
+    fn convert_roundtrip() {
+        let pdu = PDU::parse(Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0")).unwrap();
+        let parsed: Owned = (&pdu).try_into().unwrap();
+        let pdu2: PDU = (&parsed).into();
+        let parsed2: Owned = (&pdu2).try_into().unwrap();
+        assert_eq!(parsed, parsed2);
+    }
+
+    pub mod convert {
+        use super::*;
+
+        #[test]
+        fn convert_tags() {
+            let pdu = PDU::parse(Bytes::from_static(
+                b"foo.bar:3|c|#tags:value,atag:avalue|@1.0",
+            ))
+            .unwrap();
+            let parsed = (&pdu).try_into().unwrap();
+            let converted = super::super::convert::to_inline_tags(parsed);
+            assert_eq!(
+                b"foo.bar.__atag=avalue.__tags=value".to_vec(),
+                converted.name
+            );
+        }
     }
 }
