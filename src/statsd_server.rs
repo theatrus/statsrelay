@@ -1,6 +1,5 @@
 use bytes::{BufMut, BytesMut};
 use memchr::memchr;
-use statsdproto::statsd::StatsdPDU;
 use stream_cancel::Tripwire;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -21,6 +20,7 @@ use log::{debug, info, warn};
 use crate::backends::Backends;
 use crate::config::StatsdServerConfig;
 use crate::stats;
+use crate::statsd_proto::PDU;
 
 const TCP_READ_TIMEOUT: Duration = Duration::from_secs(62);
 const READ_BUFFER: usize = 8192;
@@ -74,9 +74,9 @@ impl UdpServer {
                         for p in r.drain(..) {
                             backends.provide_statsd_pdu(p);
                         }
-                        match StatsdPDU::new(buf.clone().freeze()) {
-                            Some(p) => backends.provide_statsd_pdu(p),
-                            None => (),
+                        match PDU::parse(buf.clone().freeze()) {
+                            Ok(p) => backends.provide_statsd_pdu(p),
+                            Err(_) => (),
                         }
                         buf.clear();
                     }
@@ -89,8 +89,8 @@ impl UdpServer {
     }
 }
 
-fn process_buffer_newlines(buf: &mut BytesMut) -> Vec<StatsdPDU> {
-    let mut ret: Vec<StatsdPDU> = Vec::new();
+fn process_buffer_newlines(buf: &mut BytesMut) -> Vec<PDU> {
+    let mut ret: Vec<PDU> = Vec::new();
     loop {
         match memchr(b'\n', &buf) {
             None => break,
@@ -106,7 +106,9 @@ fn process_buffer_newlines(buf: &mut BytesMut) -> Vec<StatsdPDU> {
                     // Consume a line consisting of just the word status, and do not produce a PDU
                     continue;
                 }
-                StatsdPDU::new(frozen).map(|f| ret.push(f));
+                if let Ok(pdu) = PDU::parse(frozen) {
+                    ret.push(pdu);
+                }
             }
         };
     }
@@ -155,12 +157,12 @@ async fn client_handler<T>(
                     backends.provide_statsd_pdu(p);
                 }
                 let remaining = buf.clone().freeze();
-                match StatsdPDU::new(remaining) {
-                    Some(p) => {
+                match PDU::parse(remaining) {
+                    Ok(p) => {
                         backends.provide_statsd_pdu(p);
                         ()
                     }
-                    None => (),
+                    Err(_) => (),
                 };
                 debug!("remaining {:?}", buf);
                 debug!("closing reader {}", peer);
