@@ -126,8 +126,8 @@ impl StatsdBackend {
         memoize
     }
 
-    fn provide_statsd(&self, input: StatsdSample) {
-        let pdu: statsd_proto::PDU = input.into();
+    fn provide_statsd(&self, input: &StatsdSample) {
+        let pdu: statsd_proto::PDU = input.clone().into();
         if !self
             .input_filter
             .as_ref()
@@ -232,12 +232,12 @@ impl BackendsInner {
         self.statsd.keys().collect()
     }
 
-    fn provide_statsd(&self, pdu: StatsdSample, route: &[config::Route]) {
+    fn provide_statsd(&self, pdu: &StatsdSample, route: &[config::Route]) {
         let _r = route.iter().map(|dest| match dest.route_type {
             config::RouteType::Statsd => self
                 .statsd
                 .get(dest.route_to.as_str())
-                .map(|backend| backend.provide_statsd(pdu.clone())),
+                .map(|backend| backend.provide_statsd(pdu)),
             config::RouteType::Processor => unimplemented!(),
         });
     }
@@ -290,6 +290,6 @@ impl Backends {
     pub fn provide_statsd_pdu(&self, pdu: statsd_proto::PDU, route: &[config::Route]) {
         self.inner
             .read()
-            .provide_statsd(StatsdSample::PDU(pdu), route)
+            .provide_statsd(&StatsdSample::PDU(pdu), route)
     }
 }
