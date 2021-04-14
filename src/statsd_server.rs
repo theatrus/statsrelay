@@ -18,6 +18,7 @@ use std::time::Duration;
 use log::{debug, info, warn};
 
 use crate::backends::Backends;
+use crate::config;
 use crate::config::StatsdServerConfig;
 use crate::stats;
 use crate::statsd_proto::PDU;
@@ -47,6 +48,7 @@ impl UdpServer {
         stats: stats::Scope,
         bind: String,
         backends: Backends,
+        route: Vec<config::Route>,
     ) -> std::thread::JoinHandle<()> {
         let socket = UdpSocket::bind(bind.as_str()).unwrap();
 
@@ -72,10 +74,10 @@ impl UdpServer {
                         let mut r = process_buffer_newlines(&mut buf);
                         processed_lines.inc_by(r.len() as f64);
                         for p in r.drain(..) {
-                            backends.provide_statsd_pdu(p);
+                            backends.provide_statsd_pdu(p, &route);
                         }
                         match PDU::parse(buf.clone().freeze()) {
-                            Ok(p) => backends.provide_statsd_pdu(p),
+                            Ok(p) => backends.provide_statsd_pdu(p, &route),
                             Err(_) => (),
                         }
                         buf.clear();
@@ -121,6 +123,7 @@ async fn client_handler<T>(
     mut tripwire: Tripwire,
     mut socket: T,
     backends: Backends,
+    route: Vec<config::Route>,
 ) where
     T: AsyncRead + AsyncWrite + Unpin,
 {
@@ -154,12 +157,12 @@ async fn client_handler<T>(
                 processed_lines.inc_by(r.len() as f64);
 
                 for p in r.drain(..) {
-                    backends.provide_statsd_pdu(p);
+                    backends.provide_statsd_pdu(p, &route);
                 }
                 let remaining = buf.clone().freeze();
                 match PDU::parse(remaining) {
                     Ok(p) => {
-                        backends.provide_statsd_pdu(p);
+                        backends.provide_statsd_pdu(p, &route);
                         ()
                     }
                     Err(_) => (),
@@ -174,7 +177,7 @@ async fn client_handler<T>(
                 let mut r = process_buffer_newlines(&mut buf);
                 processed_lines.inc_by(r.len() as f64);
                 for p in r.drain(..) {
-                    backends.provide_statsd_pdu(p);
+                    backends.provide_statsd_pdu(p, &route);
                 }
             }
             Err(e) if e.kind() == ErrorKind::Other => {
@@ -230,13 +233,19 @@ pub async fn run(
 
     // Spawn the threaded, non-async blocking UDP server
     let mut udp = UdpServer::new();
-    let udp_join = udp.udp_worker(stats.scope("udp"), config.bind.clone(), backends.clone());
+    let udp_join = udp.udp_worker(
+        stats.scope("udp"),
+        config.bind.clone(),
+        backends.clone(),
+        config.route.clone(),
+    );
 
     let accept_connections = stats.counter("accepts").unwrap();
     let accept_connections_unix = stats.counter("accepts_unix").unwrap();
     let accept_failures = stats.counter("accept_failures").unwrap();
     let accept_failures_unix = stats.counter("accept_failures_unix").unwrap();
 
+    let routes = config.route.clone();
     async move {
         loop {
             select! {
@@ -251,7 +260,7 @@ pub async fn run(
                             let peer_addr = format!("{:?}", socket.peer_addr());
                             debug!("accepted unix connection from {:?}", socket.peer_addr());
                             accept_connections_unix.inc();
-                            tokio::spawn(client_handler(stats.scope("connections_unix"), peer_addr, tripwire.clone(), socket, backends.clone()));
+                            tokio::spawn(client_handler(stats.scope("connections_unix"), peer_addr, tripwire.clone(), socket, backends.clone(), routes.clone()));
                         }
                         Err(err) => {
                             accept_failures_unix.inc();
@@ -266,7 +275,7 @@ pub async fn run(
                             let peer_addr = format!("{:?}", socket.peer_addr());
                             debug!("accepted connection from {:?}", socket.peer_addr());
                             accept_connections.inc();
-                            tokio::spawn(client_handler(stats.scope("connections"), peer_addr, tripwire.clone(), socket, backends.clone()));
+                            tokio::spawn(client_handler(stats.scope("connections"), peer_addr, tripwire.clone(), socket, backends.clone(), routes.clone()));
                         }
                         Err(err) => {
                             accept_failures.inc();

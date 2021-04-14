@@ -5,7 +5,8 @@
     "statsd": {
         "servers": {
             "default": {
-                "bind": "127.0.0.1:8129"
+                "bind": "127.0.0.1:8129",
+                "route": ["statsd:simple"]
             }
         },
         "backends": {

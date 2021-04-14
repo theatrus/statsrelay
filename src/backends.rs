@@ -200,12 +200,14 @@ impl BackendsInner {
         self.statsd.keys().collect()
     }
 
-    fn provide_statsd_pdu(&self, pdu: StatsdPDU) {
-        let _result: Vec<_> = self
-            .statsd
-            .iter()
-            .map(|(_, backend)| backend.provide_statsd_pdu(&pdu))
-            .collect();
+    fn provide_statsd_pdu(&self, pdu: StatsdPDU, route: &[config::Route]) {
+        let _r = route.iter().map(|dest| match dest.route_type {
+            config::RouteType::Statsd => self
+                .statsd
+                .get(dest.route_to.as_str())
+                .map(|backend| backend.provide_statsd_pdu(&pdu)),
+            config::RouteType::Processor => unimplemented!(),
+        });
     }
 }
 
@@ -253,7 +255,7 @@ impl Backends {
         self.inner.read().len()
     }
 
-    pub fn provide_statsd_pdu(&self, pdu: StatsdPDU) {
-        self.inner.read().provide_statsd_pdu(pdu)
+    pub fn provide_statsd_pdu(&self, pdu: StatsdPDU, route: &[config::Route]) {
+        self.inner.read().provide_statsd_pdu(pdu, route)
     }
 }

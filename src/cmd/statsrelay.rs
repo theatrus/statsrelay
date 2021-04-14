@@ -30,6 +30,9 @@ struct Options {
     #[structopt(short = "c", long = "--config", default_value = "/etc/statsrelay.json")]
     pub config: String,
 
+    #[structopt(long = "--config-check-and-exit")]
+    pub config_check: bool,
+
     #[structopt(short = "t", long = "--threaded")]
     pub threaded: bool,
 }
@@ -128,6 +131,10 @@ fn main() -> anyhow::Result<()> {
         .with_context(|| format!("can't load config file from {}", opts.config))?;
     info!("loaded config file {}", opts.config);
     debug!("servers defined: {:?}", config.statsd.servers);
+    if opts.config_check {
+        info!("--config-check-and-exit set, exiting");
+        return Ok(());
+    }
 
     let collector = stats::Collector::default();
 
