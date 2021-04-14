@@ -3,7 +3,8 @@
         "servers": {
             "default": {
                 "bind": "127.0.0.1:8129",
-                "socket": "/tmp/statsrelay"
+                "socket": "/tmp/statsrelay",
+                "route": ["statsd:simple", "statsd:path_discovery"]
             }
         },
         "backends": {
