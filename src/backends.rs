@@ -11,21 +11,38 @@ use crate::discovery;
 use crate::shard::{statsrelay_compat_hash, Ring};
 use crate::stats;
 use crate::statsd_client::StatsdClient;
-use crate::statsd_proto::PDU as StatsdPDU;
 use crate::statsd_proto;
 
 use log::warn;
 
-pub enum Sample {
-    PDU(StatsdPDU),
-    Parsed(statsd_proto::Owned)
+/// An either type representing one of the two forms of statsd protocols
+///
+/// In order to allow backends to operate on different levels of protocol
+/// decoding (fully decoded or just tokenized), backends take a Sample enum
+/// which represent either of the two formats, with easy conversions between
+/// them.
+///
+/// # Examples
+/// ```
+/// use statsrelay::statsd_proto;
+/// use bytes::Bytes;
+/// use statsrelay::backends::StatsdSample;
+///
+/// let input = Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0");
+/// let sample = StatsdSample::PDU(statsd_proto::PDU::parse(input).unwrap());
+/// let parsed: statsd_proto::PDU = sample.into();
+/// ```
+#[derive(Clone, Debug)]
+pub enum StatsdSample {
+    PDU(statsd_proto::PDU),
+    Parsed(statsd_proto::Owned),
 }
 
-impl <'a> From<&'a Sample> for &'a StatsdPDU {
-    fn from(inp: &'a Sample) -> Self {
-        match *inp {
-            Sample::PDU(ref pdu) => pdu,
-            Sample::Parsed(ref parsed) => parsed.into(),
+impl From<StatsdSample> for statsd_proto::PDU {
+    fn from(inp: StatsdSample) -> Self {
+        match inp {
+            StatsdSample::PDU(pdu) => pdu,
+            StatsdSample::Parsed(p) => p.into(),
         }
     }
 }
@@ -109,8 +126,8 @@ impl StatsdBackend {
         memoize
     }
 
-    fn provide_statsd(&self, input: &Sample) {
-        let pdu: &StatsdPDU = input.into();
+    fn provide_statsd(&self, input: StatsdSample) {
+        let pdu: statsd_proto::PDU = input.into();
         if !self
             .input_filter
             .as_ref()
@@ -123,15 +140,14 @@ impl StatsdBackend {
         let code = match ring_read.len() {
             0 => return, // In case of nothing to send, do nothing
             1 => 1 as u32,
-            _ => statsrelay_compat_hash(pdu),
+            _ => statsrelay_compat_hash(&pdu),
         };
         let client = ring_read.pick_from(code);
         let sender = client.sender();
 
         // Assign prefix and/or suffix
-        let pdu_clone: StatsdPDU;
-        if self.conf.prefix.is_some() || self.conf.suffix.is_some() {
-            pdu_clone = pdu.with_prefix_suffix(
+        let pdu_clone = if self.conf.prefix.is_some() || self.conf.suffix.is_some() {
+            pdu.with_prefix_suffix(
                 self.conf
                     .prefix
                     .as_ref()
@@ -142,10 +158,10 @@ impl StatsdBackend {
                     .as_ref()
                     .map(|s| s.as_bytes())
                     .unwrap_or_default(),
-            );
+            )
         } else {
-            pdu_clone = pdu.clone();
-        }
+            pdu
+        };
         match sender.try_send(pdu_clone) {
             Err(_e) => {
                 self.backend_fails.inc();
@@ -216,12 +232,12 @@ impl BackendsInner {
         self.statsd.keys().collect()
     }
 
-    fn provide_statsd(&self, pdu: Sample, route: &[config::Route]) {
+    fn provide_statsd(&self, pdu: StatsdSample, route: &[config::Route]) {
         let _r = route.iter().map(|dest| match dest.route_type {
             config::RouteType::Statsd => self
                 .statsd
                 .get(dest.route_to.as_str())
-                .map(|backend| backend.provide_statsd(&pdu)),
+                .map(|backend| backend.provide_statsd(pdu.clone())),
             config::RouteType::Processor => unimplemented!(),
         });
     }
@@ -271,7 +287,9 @@ impl Backends {
         self.inner.read().len()
     }
 
-    pub fn provide_statsd_pdu(&self, pdu: StatsdPDU, route: &[config::Route]) {
-        self.inner.read().provide_statsd(Sample::PDU(pdu), route)
+    pub fn provide_statsd_pdu(&self, pdu: statsd_proto::PDU, route: &[config::Route]) {
+        self.inner
+            .read()
+            .provide_statsd(StatsdSample::PDU(pdu), route)
     }
 }

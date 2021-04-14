@@ -174,12 +174,6 @@ impl From<Owned> for PDU {
     }
 }
 
-impl From<&Owned> for &PDU {
-    fn from(input: &Owned) -> Self {
-        input.into()
-    }
-}
-
 impl From<&Owned> for PDU {
     fn from(input: &Owned) -> Self {
         let mut bytes = Vec::with_capacity(input.name.len() + (input.tags.len() * 64) + 64);
