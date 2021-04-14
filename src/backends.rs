@@ -29,7 +29,7 @@ use log::warn;
 /// use statsrelay::backends::StatsdSample;
 ///
 /// let input = Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0");
-/// let sample = StatsdSample::PDU(statsd_proto::PDU::parse(input).unwrap());
+/// let sample = &StatsdSample::PDU(statsd_proto::PDU::parse(input).unwrap());
 /// let parsed: statsd_proto::PDU = sample.into();
 /// ```
 #[derive(Clone, Debug)]
@@ -42,6 +42,15 @@ impl From<StatsdSample> for statsd_proto::PDU {
     fn from(inp: StatsdSample) -> Self {
         match inp {
             StatsdSample::PDU(pdu) => pdu,
+            StatsdSample::Parsed(p) => p.into(),
+        }
+    }
+}
+
+impl From<&StatsdSample> for statsd_proto::PDU {
+    fn from(inp: &StatsdSample) -> Self {
+        match inp {
+            StatsdSample::PDU(pdu) => pdu.clone(),
             StatsdSample::Parsed(p) => p.into(),
         }
     }
@@ -127,7 +136,7 @@ impl StatsdBackend {
     }
 
     fn provide_statsd(&self, input: &StatsdSample) {
-        let pdu: statsd_proto::PDU = input.clone().into();
+        let pdu: statsd_proto::PDU = input.into();
         if !self
             .input_filter
             .as_ref()
