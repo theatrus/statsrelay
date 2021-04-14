@@ -12,8 +12,23 @@ use crate::shard::{statsrelay_compat_hash, Ring};
 use crate::stats;
 use crate::statsd_client::StatsdClient;
 use crate::statsd_proto::PDU as StatsdPDU;
+use crate::statsd_proto;
 
 use log::warn;
+
+pub enum Sample {
+    PDU(StatsdPDU),
+    Parsed(statsd_proto::Owned)
+}
+
+impl <'a> From<&'a Sample> for &'a StatsdPDU {
+    fn from(inp: &'a Sample) -> Self {
+        match *inp {
+            Sample::PDU(ref pdu) => pdu,
+            Sample::Parsed(ref parsed) => parsed.into(),
+        }
+    }
+}
 
 struct StatsdBackend {
     conf: config::StatsdBackendConfig,
@@ -94,7 +109,8 @@ impl StatsdBackend {
         memoize
     }
 
-    fn provide_statsd_pdu(&self, pdu: &StatsdPDU) {
+    fn provide_statsd(&self, input: &Sample) {
+        let pdu: &StatsdPDU = input.into();
         if !self
             .input_filter
             .as_ref()
@@ -200,12 +216,12 @@ impl BackendsInner {
         self.statsd.keys().collect()
     }
 
-    fn provide_statsd_pdu(&self, pdu: StatsdPDU, route: &[config::Route]) {
+    fn provide_statsd(&self, pdu: Sample, route: &[config::Route]) {
         let _r = route.iter().map(|dest| match dest.route_type {
             config::RouteType::Statsd => self
                 .statsd
                 .get(dest.route_to.as_str())
-                .map(|backend| backend.provide_statsd_pdu(&pdu)),
+                .map(|backend| backend.provide_statsd(&pdu)),
             config::RouteType::Processor => unimplemented!(),
         });
     }
@@ -256,6 +272,6 @@ impl Backends {
     }
 
     pub fn provide_statsd_pdu(&self, pdu: StatsdPDU, route: &[config::Route]) {
-        self.inner.read().provide_statsd_pdu(pdu, route)
+        self.inner.read().provide_statsd(Sample::PDU(pdu), route)
     }
 }
