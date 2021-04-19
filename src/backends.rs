@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
+use std::convert::TryInto;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
-use std::convert::TryInto;
 
 use parking_lot::RwLock;
 use regex::bytes::RegexSet;
@@ -45,6 +45,16 @@ impl TryFrom<&StatsdSample> for statsd_proto::Owned {
     fn try_from(inp: &StatsdSample) -> Result<Self, Self::Error> {
         match inp {
             StatsdSample::Parsed(p) => Ok(p.to_owned()),
+            StatsdSample::PDU(pdu) => pdu.try_into(),
+        }
+    }
+}
+
+impl TryFrom<StatsdSample> for statsd_proto::Owned {
+    type Error = statsd_proto::ParseError;
+    fn try_from(inp: StatsdSample) -> Result<Self, Self::Error> {
+        match inp {
+            StatsdSample::Parsed(p) => Ok(p),
             StatsdSample::PDU(pdu) => pdu.try_into(),
         }
     }
@@ -256,20 +266,23 @@ impl BackendsInner {
     }
 
     fn provide_statsd(&self, pdu: &StatsdSample, route: &[config::Route]) {
-        let _r = route.iter().map(|dest| match dest.route_type {
-            config::RouteType::Statsd => {
-                self.statsd
-                    .get(dest.route_to.as_str())
-                    .map(|backend| backend.provide_statsd(pdu));
-            }
-            config::RouteType::Processor => {
-                self.processors
-                    .get(dest.route_to.as_str())
-                    .map(|proc| proc.provide_statsd(pdu))
-                    .flatten()
-                    .map(|chain| self.provide_statsd(&chain.sample, chain.route.as_ref()));
-            }
-        });
+        let _r: Vec<_> = route
+            .iter()
+            .map(|dest| match dest.route_type {
+                config::RouteType::Statsd => {
+                    self.statsd
+                        .get(dest.route_to.as_str())
+                        .map(|backend| backend.provide_statsd(pdu));
+                }
+                config::RouteType::Processor => {
+                    self.processors
+                        .get(dest.route_to.as_str())
+                        .map(|proc| proc.provide_statsd(pdu))
+                        .flatten()
+                        .map(|chain| self.provide_statsd(&chain.sample, chain.route.as_ref()));
+                }
+            })
+            .collect();
     }
 }
 
@@ -328,10 +341,76 @@ impl Backends {
 pub mod test {
 
     use super::*;
+    use crate::processors;
+    use crate::statsd_proto::Parsed;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    struct AssertProc<T>
+    where
+        T: Fn(&StatsdSample) -> (),
+    {
+        proc: T,
+        count: Arc<AtomicU32>,
+    }
+
+    impl<T: Fn(&StatsdSample) -> ()> processors::Processor for AssertProc<T> {
+        fn provide_statsd(&self, sample: &StatsdSample) -> Option<processors::Output> {
+            (self.proc)(sample);
+            self.count.fetch_add(1, Ordering::Acquire);
+            None
+        }
+    }
 
     #[test]
     fn simple_nil_backend() {
         let scope = crate::stats::Collector::default().scope("prefix");
         let _backend = Backends::new(scope);
+    }
+
+    #[test]
+    fn processor_tag_test() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let proc = Box::new(AssertProc {
+            proc: |sample| {
+                let owned: statsd_proto::Owned = sample.try_into().unwrap();
+                assert_eq!(owned.name(), b"foo.bar.__tags=value");
+            },
+            count: counter.clone(),
+        });
+        let scope = crate::stats::Collector::default().scope("prefix");
+        let backend = Backends::new(scope);
+
+        let route_final = vec![config::Route {
+            route_type: config::RouteType::Processor,
+            route_to: "final".to_owned(),
+        }];
+        let tn = processors::tag::Normalizer::new(&route_final);
+
+        backend
+            .inner
+            .write()
+            .processors
+            .insert("tag".to_owned(), Box::new(tn));
+        // Insert the assert processors
+        backend
+            .inner
+            .write()
+            .processors
+            .insert("final".to_owned(), proc);
+
+        let pdu =
+            statsd_proto::PDU::parse(bytes::Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0"))
+                .unwrap();
+        let route = vec![config::Route {
+            route_type: config::RouteType::Processor,
+            route_to: "tag".to_owned(),
+        }];
+        backend.provide_statsd_pdu(pdu, &route);
+
+        // Check how many messages we've consumed
+        let actual_count = counter.load(Ordering::Acquire);
+        assert_eq!(1, actual_count);
     }
 }

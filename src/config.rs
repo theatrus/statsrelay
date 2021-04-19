@@ -4,7 +4,7 @@ use std::convert::{AsRef, TryFrom, TryInto};
 use std::fmt;
 use thiserror::Error;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum RouteType {
     Statsd,
     Processor,
@@ -38,7 +38,7 @@ impl fmt::Display for RouteType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Route {
     pub route_type: RouteType,
     pub route_to: String,
