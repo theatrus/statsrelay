@@ -222,7 +222,7 @@ pub enum BackendError {
 
 struct BackendsInner {
     statsd: HashMap<String, StatsdBackend>,
-    processors: HashMap<String, Box<dyn processors::Processor + Send + Sync + 'static>>,
+    processors: HashMap<String, Box<dyn processors::Processor + Send + Sync>>,
     stats: stats::Scope,
 }
 
@@ -371,6 +371,15 @@ pub mod test {
 
     #[test]
     fn processor_tag_test() {
+        // Create the backend
+        let scope = crate::stats::Collector::default().scope("prefix");
+        let backend = Backends::new(scope);
+
+        // Create a mock processor to receive all messages
+        let route_final = vec![config::Route {
+            route_type: config::RouteType::Processor,
+            route_to: "final".to_owned(),
+        }];
         let counter = Arc::new(AtomicU32::new(0));
         let proc = Box::new(AssertProc {
             proc: |sample| {
@@ -379,26 +388,20 @@ pub mod test {
             },
             count: counter.clone(),
         });
-        let scope = crate::stats::Collector::default().scope("prefix");
-        let backend = Backends::new(scope);
-
-        let route_final = vec![config::Route {
-            route_type: config::RouteType::Processor,
-            route_to: "final".to_owned(),
-        }];
-        let tn = processors::tag::Normalizer::new(&route_final);
-
-        backend
-            .inner
-            .write()
-            .processors
-            .insert("tag".to_owned(), Box::new(tn));
         // Insert the assert processors
         backend
             .inner
             .write()
             .processors
             .insert("final".to_owned(), proc);
+
+        // Create the processor under test
+        let tn = processors::tag::Normalizer::new(&route_final);
+        backend
+            .inner
+            .write()
+            .processors
+            .insert("tag".to_owned(), Box::new(tn));
 
         let pdu =
             statsd_proto::PDU::parse(bytes::Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0"))
@@ -409,7 +412,7 @@ pub mod test {
         }];
         backend.provide_statsd_pdu(pdu, &route);
 
-        // Check how many messages we've consumed
+        // Check how many messages the mock has received
         let actual_count = counter.load(Ordering::Acquire);
         assert_eq!(1, actual_count);
     }
