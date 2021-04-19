@@ -96,6 +96,9 @@ pub enum Processor {
 
         route: Vec<Route>,
     },
+    TagConverter {
+        route: Vec<Route>,
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

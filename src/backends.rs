@@ -1,17 +1,19 @@
 use std::collections::{HashMap, HashSet};
+use std::convert::TryFrom;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::convert::TryInto;
 
 use parking_lot::RwLock;
 use regex::bytes::RegexSet;
 use thiserror::Error;
 
-use crate::config;
 use crate::discovery;
 use crate::shard::{statsrelay_compat_hash, Ring};
 use crate::stats;
 use crate::statsd_client::StatsdClient;
 use crate::statsd_proto;
+use crate::{config, processors};
 
 use log::warn;
 
@@ -36,6 +38,16 @@ use log::warn;
 pub enum StatsdSample {
     PDU(statsd_proto::PDU),
     Parsed(statsd_proto::Owned),
+}
+
+impl TryFrom<&StatsdSample> for statsd_proto::Owned {
+    type Error = statsd_proto::ParseError;
+    fn try_from(inp: &StatsdSample) -> Result<Self, Self::Error> {
+        match inp {
+            StatsdSample::Parsed(p) => Ok(p.to_owned()),
+            StatsdSample::PDU(pdu) => pdu.try_into(),
+        }
+    }
 }
 
 impl From<StatsdSample> for statsd_proto::PDU {
@@ -200,6 +212,7 @@ pub enum BackendError {
 
 struct BackendsInner {
     statsd: HashMap<String, StatsdBackend>,
+    processors: HashMap<String, Box<dyn processors::Processor + Send + Sync + 'static>>,
     stats: stats::Scope,
 }
 
@@ -207,6 +220,7 @@ impl BackendsInner {
     fn new(stats: stats::Scope) -> Self {
         BackendsInner {
             statsd: HashMap::new(),
+            processors: HashMap::new(),
             stats: stats,
         }
     }
@@ -243,11 +257,18 @@ impl BackendsInner {
 
     fn provide_statsd(&self, pdu: &StatsdSample, route: &[config::Route]) {
         let _r = route.iter().map(|dest| match dest.route_type {
-            config::RouteType::Statsd => self
-                .statsd
-                .get(dest.route_to.as_str())
-                .map(|backend| backend.provide_statsd(pdu)),
-            config::RouteType::Processor => unimplemented!(),
+            config::RouteType::Statsd => {
+                self.statsd
+                    .get(dest.route_to.as_str())
+                    .map(|backend| backend.provide_statsd(pdu));
+            }
+            config::RouteType::Processor => {
+                self.processors
+                    .get(dest.route_to.as_str())
+                    .map(|proc| proc.provide_statsd(pdu))
+                    .flatten()
+                    .map(|chain| self.provide_statsd(&chain.sample, chain.route.as_ref()));
+            }
         });
     }
 }
@@ -300,5 +321,17 @@ impl Backends {
         self.inner
             .read()
             .provide_statsd(&StatsdSample::PDU(pdu), route)
+    }
+}
+
+#[cfg(test)]
+pub mod test {
+
+    use super::*;
+
+    #[test]
+    fn simple_nil_backend() {
+        let scope = crate::stats::Collector::default().scope("prefix");
+        let _backend = Backends::new(scope);
     }
 }
