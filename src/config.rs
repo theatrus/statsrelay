@@ -83,10 +83,6 @@ pub mod processor {
     #[derive(Debug, Serialize, Deserialize, Clone)]
     pub struct Sampler {
         pub window: u32,
-
-        pub counter_cardinality: Option<u32>,
-        pub gauge_cardinality: Option<u32>,
-        pub timer_cardinality: Option<u32>,
         pub timer_reservoir_size: Option<u32>,
 
         pub route: Vec<Route>,
