@@ -85,7 +85,9 @@ impl BackendsInner {
                         .get(dest.route_to.as_str())
                         .map(|proc| proc.provide_statsd(pdu))
                         .flatten()
-                        .map(|chain| self.provide_statsd(&chain.sample, chain.route.as_ref()));
+                        .map(|chain| { 
+                            self.provide_statsd(&chain.new_sample.as_ref().unwrap_or(pdu), chain.route.as_ref())
+                        });
                 }
             })
             .collect();

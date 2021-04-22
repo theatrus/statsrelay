@@ -179,7 +179,10 @@ async fn load_processors(
                 Box::new(processors::tag::Normalizer::new(tc.route.as_ref()))
             }
             config::Processor::Sampler(sampler) => {
-                Box::new(processors::sampler::Sampler::new(sampler.clone())?)
+                Box::new(processors::sampler::Sampler::new(sampler)?)
+            }
+            config::Processor::Cardinality(cardinality) => {
+                Box::new(processors::cardinality::Cardinality::new(cardinality))
             }
         };
         backends.replace_processor(name.as_str(), proc)?;

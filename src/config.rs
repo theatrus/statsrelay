@@ -82,24 +82,24 @@ pub mod processor {
 
     #[derive(Debug, Serialize, Deserialize, Clone)]
     pub struct Sampler {
-        counter_cardinality: Option<u32>,
-        sampling_threshold: Option<u32>,
-        sampling_window: Option<u32>,
+        pub window: u32,
 
-        gauge_cardinality: Option<u32>,
-        gauge_sampling_threshold: Option<u32>,
-        gauge_sampling_window: Option<u32>,
-
-        timer_cardinality: Option<u32>,
-        timer_sampling_threshold: Option<u32>,
-        timer_sampling_window: Option<u32>,
-        reservoir_size: Option<u32>,
+        pub counter_cardinality: Option<u32>,
+        pub gauge_cardinality: Option<u32>,
+        pub timer_cardinality: Option<u32>,
+        pub timer_reservoir_size: Option<u32>,
 
         pub route: Vec<Route>,
     }
 
     #[derive(Serialize, Deserialize, Debug, Clone)]
     pub struct TagConverter {
+        pub route: Vec<Route>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, Clone)]
+    pub struct Cardinality {
+        pub limit: u32,
         pub route: Vec<Route>,
     }
 }
@@ -109,6 +109,7 @@ pub mod processor {
 pub enum Processor {
     Sampler(processor::Sampler),
     TagConverter(processor::TagConverter),
+    Cardinality(processor::Cardinality),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -240,6 +241,7 @@ fn check_config_route(config: &Config) -> Result<(), Error> {
         .map(|(_, proc)| match proc {
             Processor::Sampler(sampler) => check_routes(config, sampler.route.as_ref()),
             Processor::TagConverter(tc) => check_routes(config, tc.route.as_ref()),
+            Processor::Cardinality(c) => check_routes(config, c.route.as_ref()),
         })
         .collect();
     routes.map(|_| ())

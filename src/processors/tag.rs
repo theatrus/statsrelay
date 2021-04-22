@@ -23,8 +23,8 @@ impl processors::Processor for Normalizer {
             .map(|inp| {
                 let out = statsd_proto::convert::to_inline_tags(inp);
                 processors::Output {
-                    sample: Sample::Parsed(out),
-                    route: self.route.clone(),
+                    new_sample: Some(Sample::Parsed(out)),
+                    route: self.route.as_ref(),
                 }
             })
             .ok()
@@ -52,7 +52,7 @@ pub mod test {
         let sample = Sample::PDU(pdu);
         let result = tn.provide_statsd(&sample).unwrap();
 
-        let owned: statsd_proto::Owned = result.sample.try_into().unwrap();
+        let owned: statsd_proto::Owned = result.new_sample.unwrap().try_into().unwrap();
         assert_eq!(owned.name(), b"foo.bar.__tags=value");
         assert_eq!(route, result.route);
     }
