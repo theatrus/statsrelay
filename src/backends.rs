@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::convert::TryInto;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -154,8 +153,9 @@ impl Backends {
 pub mod test {
 
     use super::*;
-    use crate::processors;
+    use crate::processors::{self, Processor};
     use crate::statsd_proto::Parsed;
+    use std::convert::TryInto;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
     use std::sync::Arc;
@@ -182,6 +182,34 @@ pub mod test {
         let _backend = Backends::new(scope);
     }
 
+    fn make_counting_mock() -> (Arc<AtomicU32>, Box<dyn Processor + Send + Sync>) {
+        let counter = Arc::new(AtomicU32::new(0));
+        let proc = Box::new(AssertProc {
+            proc: |_| {},
+            count: counter.clone(),
+        });
+        (counter, proc)
+    }
+
+    fn make_asserting_mock<T: Fn(&Sample) -> () + Send + Sync + 'static>(
+        t: T,
+    ) -> (Arc<AtomicU32>, Box<dyn Processor + Send + Sync>) {
+        let counter = Arc::new(AtomicU32::new(0));
+        let proc = Box::new(AssertProc {
+            proc: t,
+            count: counter.clone(),
+        });
+        (counter, proc)
+    }
+
+    fn insert_proc(backend: &Backends, name: &str, proc: Box<dyn Processor + Send + Sync>) {
+        backend
+            .inner
+            .write()
+            .processors
+            .insert(name.to_owned(), proc);
+    }
+
     #[test]
     fn processor_tag_test() {
         // Create the backend
@@ -193,28 +221,17 @@ pub mod test {
             route_type: config::RouteType::Processor,
             route_to: "final".to_owned(),
         }];
-        let counter = Arc::new(AtomicU32::new(0));
-        let proc = Box::new(AssertProc {
-            proc: |sample| {
-                let owned: statsd_proto::Owned = sample.try_into().unwrap();
-                assert_eq!(owned.name(), b"foo.bar.__tags=value");
-            },
-            count: counter.clone(),
+        let (counter, proc) = make_asserting_mock(|sample| {
+            let owned: statsd_proto::Owned = sample.try_into().unwrap();
+            assert_eq!(owned.name(), b"foo.bar.__tags=value");
         });
+
         // Insert the assert processors
-        backend
-            .inner
-            .write()
-            .processors
-            .insert("final".to_owned(), proc);
+        insert_proc(&backend, "final", proc);
 
         // Create the processor under test
         let tn = processors::tag::Normalizer::new(&route_final);
-        backend
-            .inner
-            .write()
-            .processors
-            .insert("tag".to_owned(), Box::new(tn));
+        insert_proc(&backend, "tag", Box::new(tn));
 
         let pdu =
             statsd_proto::PDU::parse(bytes::Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0"))
@@ -228,5 +245,49 @@ pub mod test {
         // Check how many messages the mock has received
         let actual_count = counter.load(Ordering::Acquire);
         assert_eq!(1, actual_count);
+    }
+
+    #[test]
+    fn processor_fanout_test() {
+        // Create the backend
+        let scope = crate::stats::Collector::default().scope("prefix");
+        let backend = Backends::new(scope);
+
+        // Create a mock processor to receive all messages, 2x over
+        let route_final = vec![
+            config::Route {
+                route_type: config::RouteType::Processor,
+                route_to: "final1".to_owned(),
+            },
+            config::Route {
+                route_type: config::RouteType::Processor,
+                route_to: "final2".to_owned(),
+            },
+        ];
+        let (counter1, proc1) = make_counting_mock();
+        let (counter2, proc2) = make_counting_mock();
+
+        // Insert the assert processors
+        insert_proc(&backend, "final1", proc1);
+        insert_proc(&backend, "final2", proc2);
+
+        // Create the processor under test
+        let tn = processors::tag::Normalizer::new(&route_final);
+        insert_proc(&backend, "tag", Box::new(tn));
+
+        let pdu =
+            statsd_proto::PDU::parse(bytes::Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0"))
+                .unwrap();
+        let route = vec![config::Route {
+            route_type: config::RouteType::Processor,
+            route_to: "tag".to_owned(),
+        }];
+        backend.provide_statsd_pdu(pdu, &route);
+
+        // Check how many messages the mock has received
+        let actual_count = counter1.load(Ordering::Acquire);
+        assert_eq!(1, actual_count);
+        let actual_count2 = counter2.load(Ordering::Acquire);
+        assert_eq!(1, actual_count2);
     }
 }
