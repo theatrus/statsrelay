@@ -51,6 +51,11 @@ prometheus = "0.11"
 # malloc
 jemallocator = "0.3.0"
 
+# Samplers
+cuckoofilter = "0"
+hyperloglog = "1"
+ahash = "0.7"
+
 [[bench]]
 name = "statsd_benchmark"
 harness = false
