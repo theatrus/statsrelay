@@ -1,218 +1,16 @@
 use std::collections::{HashMap, HashSet};
-use std::convert::TryFrom;
 use std::convert::TryInto;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use regex::bytes::RegexSet;
 use thiserror::Error;
 
 use crate::discovery;
-use crate::shard::{statsrelay_compat_hash, Ring};
 use crate::stats;
-use crate::statsd_client::StatsdClient;
+use crate::statsd_backend::StatsdBackend;
 use crate::statsd_proto;
+use crate::statsd_proto::Sample;
 use crate::{config, processors};
-
-use log::warn;
-
-/// An either type representing one of the two forms of statsd protocols
-///
-/// In order to allow backends to operate on different levels of protocol
-/// decoding (fully decoded or just tokenized), backends take a Sample enum
-/// which represent either of the two formats, with easy conversions between
-/// them.
-///
-/// # Examples
-/// ```
-/// use statsrelay::statsd_proto;
-/// use bytes::Bytes;
-/// use statsrelay::backends::StatsdSample;
-///
-/// let input = Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0");
-/// let sample = &StatsdSample::PDU(statsd_proto::PDU::parse(input).unwrap());
-/// let parsed: statsd_proto::PDU = sample.into();
-/// ```
-#[derive(Clone, Debug)]
-pub enum StatsdSample {
-    PDU(statsd_proto::PDU),
-    Parsed(statsd_proto::Owned),
-}
-
-impl TryFrom<&StatsdSample> for statsd_proto::Owned {
-    type Error = statsd_proto::ParseError;
-    fn try_from(inp: &StatsdSample) -> Result<Self, Self::Error> {
-        match inp {
-            StatsdSample::Parsed(p) => Ok(p.to_owned()),
-            StatsdSample::PDU(pdu) => pdu.try_into(),
-        }
-    }
-}
-
-impl TryFrom<StatsdSample> for statsd_proto::Owned {
-    type Error = statsd_proto::ParseError;
-    fn try_from(inp: StatsdSample) -> Result<Self, Self::Error> {
-        match inp {
-            StatsdSample::Parsed(p) => Ok(p),
-            StatsdSample::PDU(pdu) => pdu.try_into(),
-        }
-    }
-}
-
-impl From<StatsdSample> for statsd_proto::PDU {
-    fn from(inp: StatsdSample) -> Self {
-        match inp {
-            StatsdSample::PDU(pdu) => pdu,
-            StatsdSample::Parsed(p) => p.into(),
-        }
-    }
-}
-
-impl From<&StatsdSample> for statsd_proto::PDU {
-    fn from(inp: &StatsdSample) -> Self {
-        match inp {
-            StatsdSample::PDU(pdu) => pdu.clone(),
-            StatsdSample::Parsed(p) => p.into(),
-        }
-    }
-}
-
-struct StatsdBackend {
-    conf: config::StatsdBackendConfig,
-    ring: Ring<StatsdClient>,
-    input_filter: Option<RegexSet>,
-    warning_log: AtomicU64,
-    backend_sends: stats::Counter,
-    backend_fails: stats::Counter,
-}
-
-impl StatsdBackend {
-    fn new(
-        stats: stats::Scope,
-        conf: &config::StatsdBackendConfig,
-        client_ref: Option<&StatsdBackend>,
-        discovery_update: Option<&discovery::Update>,
-    ) -> anyhow::Result<Self> {
-        let mut filters: Vec<String> = Vec::new();
-
-        // This is ugly, sorry
-        if conf.input_blocklist.is_some() {
-            filters.push(conf.input_blocklist.as_ref().unwrap().clone());
-        }
-        if conf.input_filter.is_some() {
-            filters.push(conf.input_filter.as_ref().unwrap().clone());
-        }
-        let input_filter = if filters.len() > 0 {
-            Some(RegexSet::new(filters).unwrap())
-        } else {
-            None
-        };
-
-        let mut ring: Ring<StatsdClient> = Ring::new();
-
-        // Use the same backend for the same endpoint address, caching the lookup locally
-        let mut memoize: HashMap<String, StatsdClient> =
-            client_ref.map_or_else(|| HashMap::new(), |b| b.clients());
-
-        let use_endpoints = discovery_update
-            .map(|u| u.sources())
-            .unwrap_or(&conf.shard_map);
-        for endpoint in use_endpoints {
-            if let Some(client) = memoize.get(endpoint) {
-                ring.push(client.clone())
-            } else {
-                let client = StatsdClient::new(
-                    stats.scope("statsd_client"),
-                    endpoint.as_str(),
-                    conf.max_queue.unwrap_or(100000) as usize,
-                );
-                memoize.insert(endpoint.clone(), client.clone());
-                ring.push(client);
-            }
-        }
-
-        let backend = StatsdBackend {
-            conf: conf.clone(),
-            ring: ring,
-            input_filter: input_filter,
-            warning_log: AtomicU64::new(0),
-            backend_fails: stats.counter("backend_fails").unwrap(),
-            backend_sends: stats.counter("backend_sends").unwrap(),
-        };
-
-        Ok(backend)
-    }
-
-    // Capture the old ring contents into a memoization map by endpoint,
-    // letting us re-use any old client connections and buffers. Note we
-    // won't start tearing down connections until the memoization buffer and
-    // old ring are both dropped.
-    fn clients(&self) -> HashMap<String, StatsdClient> {
-        let mut memoize: HashMap<String, StatsdClient> = HashMap::new();
-        for i in 0..self.ring.len() {
-            let client = self.ring.pick_from(i as u32);
-            memoize.insert(String::from(client.endpoint()), client.clone());
-        }
-        memoize
-    }
-
-    fn provide_statsd(&self, input: &StatsdSample) {
-        let pdu: statsd_proto::PDU = input.into();
-        if !self
-            .input_filter
-            .as_ref()
-            .map_or(true, |inf| inf.is_match(pdu.name()))
-        {
-            return;
-        }
-
-        let ring_read = &self.ring;
-        let code = match ring_read.len() {
-            0 => return, // In case of nothing to send, do nothing
-            1 => 1 as u32,
-            _ => statsrelay_compat_hash(&pdu),
-        };
-        let client = ring_read.pick_from(code);
-        let sender = client.sender();
-
-        // Assign prefix and/or suffix
-        let pdu_clone = if self.conf.prefix.is_some() || self.conf.suffix.is_some() {
-            pdu.with_prefix_suffix(
-                self.conf
-                    .prefix
-                    .as_ref()
-                    .map(|p| p.as_bytes())
-                    .unwrap_or_default(),
-                self.conf
-                    .suffix
-                    .as_ref()
-                    .map(|s| s.as_bytes())
-                    .unwrap_or_default(),
-            )
-        } else {
-            pdu
-        };
-        match sender.try_send(pdu_clone) {
-            Err(_e) => {
-                self.backend_fails.inc();
-                let count = self
-                    .warning_log
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if count % 1000 == 0 {
-                    warn!(
-                        "error pushing to queue full (endpoint {}, total failures {})",
-                        client.endpoint(),
-                        count
-                    );
-                }
-            }
-            Ok(_) => {
-                self.backend_sends.inc();
-            }
-        }
-    }
-}
 
 #[derive(Error, Debug)]
 pub enum BackendError {
@@ -233,6 +31,15 @@ impl BackendsInner {
             processors: HashMap::new(),
             stats: stats,
         }
+    }
+
+    fn replace_processor(
+        &mut self,
+        name: &str,
+        processor: Box<dyn processors::Processor + Send + Sync>,
+    ) -> anyhow::Result<()> {
+        self.processors.insert(name.to_owned(), processor);
+        Ok(())
     }
 
     fn replace_statsd_backend(
@@ -265,7 +72,7 @@ impl BackendsInner {
         self.statsd.keys().collect()
     }
 
-    fn provide_statsd(&self, pdu: &StatsdSample, route: &[config::Route]) {
+    fn provide_statsd(&self, pdu: &Sample, route: &[config::Route]) {
         let _r: Vec<_> = route
             .iter()
             .map(|dest| match dest.route_type {
@@ -302,6 +109,14 @@ impl Backends {
         }
     }
 
+    pub fn replace_processor(
+        &self,
+        name: &str,
+        processor: Box<dyn processors::Processor + Send + Sync>,
+    ) -> anyhow::Result<()> {
+        self.inner.write().replace_processor(name, processor)
+    }
+
     pub fn replace_statsd_backend(
         &self,
         name: &String,
@@ -331,9 +146,7 @@ impl Backends {
     }
 
     pub fn provide_statsd_pdu(&self, pdu: statsd_proto::PDU, route: &[config::Route]) {
-        self.inner
-            .read()
-            .provide_statsd(&StatsdSample::PDU(pdu), route)
+        self.inner.read().provide_statsd(&Sample::PDU(pdu), route)
     }
 }
 
@@ -349,14 +162,14 @@ pub mod test {
 
     struct AssertProc<T>
     where
-        T: Fn(&StatsdSample) -> (),
+        T: Fn(&Sample) -> (),
     {
         proc: T,
         count: Arc<AtomicU32>,
     }
 
-    impl<T: Fn(&StatsdSample) -> ()> processors::Processor for AssertProc<T> {
-        fn provide_statsd(&self, sample: &StatsdSample) -> Option<processors::Output> {
+    impl<T: Fn(&Sample) -> ()> processors::Processor for AssertProc<T> {
+        fn provide_statsd(&self, sample: &Sample) -> Option<processors::Output> {
             (self.proc)(sample);
             self.count.fetch_add(1, Ordering::Acquire);
             None

@@ -9,6 +9,7 @@ use futures::{stream::FuturesUnordered, FutureExt};
 use stream_cancel::Tripwire;
 use structopt::StructOpt;
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use tokio::runtime;
@@ -21,6 +22,7 @@ use log::{debug, error, info};
 use statsrelay::backends;
 use statsrelay::config;
 use statsrelay::discovery;
+use statsrelay::processors;
 use statsrelay::stats;
 use statsrelay::statsd_server;
 use statsrelay::{admin, config::Config};
@@ -41,9 +43,13 @@ struct Options {
 /// scope. The server will spawn any listeners, initialize a backend
 /// configuration update loop, as well as register signal handlers.
 async fn server(scope: stats::Scope, config: Config, opts: Options) {
+    let backend_reloads = scope.counter("backend_reloads").unwrap();
     let backends = backends::Backends::new(scope.scope("backends"));
 
-    let backend_reloads = scope.counter("backend_reloads").unwrap();
+    // Load processors
+    if let Some(processors) = config.processors.as_ref() {
+        load_processors(&backends, processors).await.unwrap();
+    }
 
     let (sender, tripwire) = Tripwire::new();
     let mut run: FuturesUnordered<_> = config
@@ -158,6 +164,26 @@ fn main() -> anyhow::Result<()> {
 
     drop(runtime);
     info!("runtime terminated");
+    Ok(())
+}
+
+/// Load processors from a given config structure and pack them into the given
+/// backend set. Currently processors can't be reloaded at runtime.
+async fn load_processors(
+    backends: &backends::Backends,
+    processors: &HashMap<String, config::Processor>,
+) -> anyhow::Result<()> {
+    for (name, cp) in processors.iter() {
+        let proc: Box<dyn processors::Processor + Send + Sync> = match cp {
+            config::Processor::TagConverter(tc) => {
+                Box::new(processors::tag::Normalizer::new(tc.route.as_ref()))
+            }
+            config::Processor::Sampler(sampler) => {
+                Box::new(processors::sampler::Sampler::new(sampler.clone())?)
+            }
+        };
+        backends.replace_processor(name.as_str(), proc)?;
+    }
     Ok(())
 }
 

@@ -77,10 +77,11 @@ impl Serialize for Route {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Processor {
-    Sampler {
+pub mod processor {
+    use super::*;
+
+    #[derive(Debug, Serialize, Deserialize, Clone)]
+    pub struct Sampler {
         counter_cardinality: Option<u32>,
         sampling_threshold: Option<u32>,
         sampling_window: Option<u32>,
@@ -94,16 +95,20 @@ pub enum Processor {
         timer_sampling_window: Option<u32>,
         reservoir_size: Option<u32>,
 
-        route: Vec<Route>,
-    },
-    TagConverter {
-        route: Vec<Route>,
+        pub route: Vec<Route>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, Clone)]
+    pub struct TagConverter {
+        pub route: Vec<Route>,
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Processors {
-    pub processors: HashMap<String, Processor>,
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Processor {
+    Sampler(processor::Sampler),
+    TagConverter(processor::TagConverter),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -183,7 +188,7 @@ pub struct Config {
     pub admin: Option<AdminConfig>,
     pub statsd: StatsdConfig,
     pub discovery: Option<Discovery>,
-    pub processor: Option<Processors>,
+    pub processors: Option<HashMap<String, Processor>>,
 }
 
 #[derive(Error, Debug)]
@@ -198,33 +203,46 @@ pub enum Error {
     UnknownRoutingDestination(Route),
 }
 
-fn check_config_route(config: &Config) -> Result<(), Error> {
-    for (_, statsd) in config.statsd.servers.iter() {
-        for route in statsd.route.iter() {
-            match route.route_type {
-                RouteType::Statsd => {
-                    config
-                        .statsd
-                        .backends
+fn check_routes(config: &Config, routes: &[Route]) -> Result<(), Error> {
+    let result: Result<Vec<_>, Error> = routes
+        .iter()
+        .map(|route| match route.route_type {
+            RouteType::Statsd => config
+                .statsd
+                .backends
+                .get(route.route_to.as_str())
+                .ok_or(Error::UnknownRoutingDestination(route.clone()))
+                .map(|_| ()),
+            RouteType::Processor => {
+                if let Some(procs) = &config.processors {
+                    return procs
                         .get(route.route_to.as_str())
                         .ok_or(Error::UnknownRoutingDestination(route.clone()))
-                        .map(|_| ())?;
-                }
-                RouteType::Processor => {
-                    if let Some(procs) = &config.processor {
-                        procs
-                            .processors
-                            .get(route.route_to.as_str())
-                            .ok_or(Error::UnknownRoutingDestination(route.clone()))
-                            .map(|_| ())?;
-                    } else {
-                        return Err(Error::UnknownRoutingDestination(route.clone()));
-                    }
+                        .map(|_| ());
+                } else {
+                    Err(Error::UnknownRoutingDestination(route.clone()))
                 }
             }
-        }
+        })
+        .collect();
+    result.map(|_| ())
+}
+
+fn check_config_route(config: &Config) -> Result<(), Error> {
+    for (_, statsd) in config.statsd.servers.iter() {
+        check_routes(config, statsd.route.as_ref())?;
     }
-    Ok(())
+    let routes: Result<Vec<_>, Error> = config
+        .clone()
+        .processors
+        .unwrap_or_default()
+        .iter()
+        .map(|(_, proc)| match proc {
+            Processor::Sampler(sampler) => check_routes(config, sampler.route.as_ref()),
+            Processor::TagConverter(tc) => check_routes(config, tc.route.as_ref()),
+        })
+        .collect();
+    routes.map(|_| ())
 }
 
 fn check_config_discovery(config: &Config, discovery: &Discovery) -> anyhow::Result<()> {
@@ -290,6 +308,12 @@ pub mod test {
                         }
                 }
             },
+            "processors": {
+                "tag1": {
+                    "type": "tag_converter",
+                    "route": ["statsd:test1"]
+                }
+            },
             "discovery": {
                 "sources": {
                     "file": {
@@ -326,6 +350,8 @@ pub mod test {
             default_server.bind,
             "127.0.0.1:BIND_STATSD_PORT".to_string()
         );
+        // Check processors
+        assert_eq!(1, config.clone().processors.unwrap_or_default().len());
         // Check discovery
         let discovery = config.discovery.unwrap();
         assert_eq!(2, discovery.sources.len());

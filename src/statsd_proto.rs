@@ -93,6 +93,67 @@ impl PartialEq for Tag {
     }
 }
 
+/// An either type representing one of the two forms of statsd protocols
+///
+/// In order to allow backends to operate on different levels of protocol
+/// decoding (fully decoded or just tokenized), backends take a Sample enum
+/// which represent either of the two formats, with easy conversions between
+/// them.
+///
+/// # Examples
+/// ```
+/// use statsrelay::statsd_proto;
+/// use bytes::Bytes;
+/// use statsrelay::statsd_proto::Sample;
+///
+/// let input = Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0");
+/// let sample = &Sample::PDU(statsd_proto::PDU::parse(input).unwrap());
+/// let parsed: statsd_proto::PDU = sample.into();
+/// ```
+#[derive(Clone, Debug)]
+pub enum Sample {
+    PDU(PDU),
+    Parsed(Owned),
+}
+
+impl TryFrom<&Sample> for Owned {
+    type Error = ParseError;
+    fn try_from(inp: &Sample) -> Result<Self, Self::Error> {
+        match inp {
+            Sample::Parsed(p) => Ok(p.to_owned()),
+            Sample::PDU(pdu) => pdu.try_into(),
+        }
+    }
+}
+
+impl TryFrom<Sample> for Owned {
+    type Error = ParseError;
+    fn try_from(inp: Sample) -> Result<Self, Self::Error> {
+        match inp {
+            Sample::Parsed(p) => Ok(p),
+            Sample::PDU(pdu) => pdu.try_into(),
+        }
+    }
+}
+
+impl From<Sample> for PDU {
+    fn from(inp: Sample) -> Self {
+        match inp {
+            Sample::PDU(pdu) => pdu,
+            Sample::Parsed(p) => p.into(),
+        }
+    }
+}
+
+impl From<&Sample> for PDU {
+    fn from(inp: &Sample) -> Self {
+        match inp {
+            Sample::PDU(pdu) => pdu.clone(),
+            Sample::Parsed(p) => p.into(),
+        }
+    }
+}
+
 pub trait Parsed {
     fn name(&self) -> &[u8];
     fn metric_type(&self) -> Type;

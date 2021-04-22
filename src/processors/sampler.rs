@@ -1,6 +1,6 @@
 use crate::config;
-use crate::backends::StatsdSample;
 use crate::processors;
+use crate::statsd_proto::Sample;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -10,19 +10,17 @@ pub enum Error {
 }
 
 pub struct Sampler {
-
+    config: config::processor::Sampler,
 }
 
 impl Sampler {
-    fn new(config: config::Processor) -> Result<Self, Error> {
-        Ok(Sampler {
-
-        })
+    pub fn new(config: config::processor::Sampler) -> Result<Self, Error> {
+        Ok(Sampler { config: config })
     }
 }
 
 impl processors::Processor for Sampler {
-    fn provide_statsd(&self, sample: &StatsdSample) -> Option<processors::Output> {
+    fn provide_statsd(&self, sample: &Sample) -> Option<processors::Output> {
         None
     }
 }
