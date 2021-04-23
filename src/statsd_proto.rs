@@ -6,10 +6,33 @@ use thiserror::Error;
 use std::{
     cmp::Ordering,
     convert::{TryFrom, TryInto},
+    hash::Hash,
+    hash::Hasher,
     vec,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// An Owned identifier for a statsd message
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Id {
+    name: Vec<u8>,
+    mtype: Type,
+    tags: Vec<Tag>,
+}
+
+impl Hash for Id {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        for tag in self.tags.iter() {
+            tag.hash(state);
+        }
+        self.tags.hash(state);
+        self.mtype.hash(state);
+    }
+}
+
+/// The type of a statsd line or metric. The common types are covered, including
+/// a few extensions such as Set and DirectGauge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     Counter,
     Timer,
@@ -36,8 +59,8 @@ impl TryFrom<&[u8]> for Type {
     }
 }
 
-impl From<Type> for &[u8] {
-    fn from(input: Type) -> Self {
+impl From<&Type> for &[u8] {
+    fn from(input: &Type) -> Self {
         match input {
             Type::Counter => b"c",
             Type::DirectGauge => b"G",
@@ -45,6 +68,13 @@ impl From<Type> for &[u8] {
             Type::Timer => b"ms",
             Type::Set => b"s",
         }
+    }
+}
+
+impl Hash for Type {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let key: &[u8] = self.into();
+        key.hash(state);
     }
 }
 
@@ -73,6 +103,13 @@ pub enum ParseError {
 pub struct Tag {
     name: Vec<u8>,
     value: Vec<u8>,
+}
+
+impl Hash for Tag {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.value.hash(state);
+    }
 }
 
 impl Ord for Tag {
@@ -116,6 +153,15 @@ pub enum Sample {
     Parsed(Owned),
 }
 
+impl Hash for Sample {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Sample::PDU(pdu) => pdu.hash(state),
+            Sample::Parsed(parsed) => parsed.hash(state),
+        }
+    }
+}
+
 impl TryFrom<&Sample> for Owned {
     type Error = ParseError;
     fn try_from(inp: &Sample) -> Result<Self, Self::Error> {
@@ -155,8 +201,9 @@ impl From<&Sample> for PDU {
 }
 
 pub trait Parsed {
+    fn id(&self) -> &Id;
     fn name(&self) -> &[u8];
-    fn metric_type(&self) -> Type;
+    fn metric_type(&self) -> &Type;
     fn value(&self) -> f64;
     fn sample_rate(&self) -> Option<f64>;
     fn tags(&self) -> &[Tag];
@@ -169,19 +216,26 @@ pub trait Parsed {
 /// by default.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Owned {
-    name: Vec<u8>,
-    mtype: Type,
+    id: Id,
     value: f64,
     sample_rate: Option<f64>,
-    tags: Vec<Tag>,
+}
+
+impl Hash for Owned {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
 }
 
 impl Parsed for Owned {
-    fn name(&self) -> &[u8] {
-        self.name.as_ref()
+    fn id(&self) -> &Id {
+        &self.id
     }
-    fn metric_type(&self) -> Type {
-        self.mtype
+    fn name(&self) -> &[u8] {
+        self.id.name.as_ref()
+    }
+    fn metric_type(&self) -> &Type {
+        &self.id.mtype
     }
     fn value(&self) -> f64 {
         self.value
@@ -190,7 +244,7 @@ impl Parsed for Owned {
         self.sample_rate
     }
     fn tags(&self) -> &[Tag] {
-        self.tags.as_slice()
+        self.id.tags.as_slice()
     }
 }
 
@@ -219,12 +273,15 @@ impl TryFrom<&PDU> for Owned {
             .transpose()?;
         let mtype: Type = pdu.pdu_type().try_into()?;
         let tags = pdu.tags().map(|v| parse_tags(v)).transpose()?;
-        Ok(Owned {
+        let id = Id {
             name: pdu.name().to_vec(),
             mtype: mtype,
+            tags: tags.unwrap_or_default(),
+        };
+        Ok(Owned {
+            id: id,
             value: value,
             sample_rate: sample_rate,
-            tags: tags.unwrap_or_default(),
         })
     }
 }
@@ -237,15 +294,16 @@ impl From<Owned> for PDU {
 
 impl From<&Owned> for PDU {
     fn from(input: &Owned) -> Self {
-        let mut bytes = Vec::with_capacity(input.name.len() + (input.tags.len() * 64) + 64);
+        let mut bytes = Vec::with_capacity(input.id.name.len() + (input.id.tags.len() * 64) + 64);
 
-        bytes.extend(&input.name);
+        bytes.extend(&input.id.name);
         bytes.push(b':');
         let value_index = bytes.len();
         bytes.extend(lexical::to_string(input.value).as_bytes());
         bytes.push(b'|');
         let type_index = bytes.len();
-        bytes.extend_from_slice(input.mtype.into());
+        let mtype = &input.id.mtype;
+        bytes.extend_from_slice(mtype.into());
         let type_index_end = bytes.len();
         let sample_rate_index = if let Some(sr) = input.sample_rate {
             bytes.extend_from_slice(b"|@");
@@ -257,10 +315,10 @@ impl From<&Owned> for PDU {
             None
         };
 
-        let tags_index = if input.tags.len() > 0 {
+        let tags_index = if input.id.tags.len() > 0 {
             bytes.extend_from_slice(b"|#");
             let start = bytes.len();
-            let mut peek = input.tags.iter().peekable();
+            let mut peek = input.id.tags.iter().peekable();
             while let Some(tag) = peek.next() {
                 bytes.extend(&tag.name);
                 bytes.push(b':');
@@ -289,25 +347,28 @@ pub mod convert {
     /// Convert from external tags to internal tags. Does not check for
     /// collisions of existing inline tags with the newly generated inline tags.
     pub fn to_inline_tags(mut input: Owned) -> Owned {
-        if input.tags.len() == 0 {
+        if input.id.tags.len() == 0 {
             return input;
         }
-        input.tags.sort();
-        let mut name = input.name;
+        input.id.tags.sort();
+        let mut name = input.id.name;
         // Estimate on tag size without iterating through all actual tags
-        name.reserve(input.tags.len() * 64);
-        for tag in input.tags.drain(..) {
+        name.reserve(input.id.tags.len() * 64);
+        for tag in input.id.tags.drain(..) {
             name.extend_from_slice(b".__");
             name.extend(tag.name);
             name.extend_from_slice(b"=");
             name.extend(tag.value);
         }
-        Owned {
+        let id = Id {
             name: name,
-            mtype: input.mtype,
+            mtype: input.id.mtype,
+            tags: vec![],
+        };
+        Owned {
+            id: id,
             value: input.value,
             sample_rate: input.sample_rate,
-            tags: vec![],
         }
     }
 }
@@ -358,6 +419,13 @@ pub struct PDU {
     type_index_end: usize,
     sample_rate_index: Option<(usize, usize)>,
     tags_index: Option<(usize, usize)>,
+}
+
+impl Hash for PDU {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name().hash(state);
+        self.pdu_type().hash(state);
+    }
 }
 
 impl PDU {
@@ -478,6 +546,7 @@ impl PDU {
 #[cfg(test)]
 pub mod test {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn parse_pdus() -> anyhow::Result<()> {
@@ -599,11 +668,11 @@ pub mod test {
         let pdu = PDU::parse(Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0")).unwrap();
         let parsed: Owned = (&pdu).try_into().unwrap();
         assert_eq!(parsed.value, 3.0);
-        assert_eq!(parsed.name, b"foo.bar");
-        assert_eq!(parsed.mtype, Type::Counter);
+        assert_eq!(parsed.id.name, b"foo.bar");
+        assert_eq!(parsed.id.mtype, Type::Counter);
         assert_eq!(parsed.sample_rate, Some(1.0));
         assert_eq!(
-            parsed.tags[0],
+            parsed.id.tags[0],
             Tag {
                 name: b"tags".to_vec(),
                 value: b"value".to_vec()
@@ -620,6 +689,26 @@ pub mod test {
         assert_eq!(parsed, parsed2);
     }
 
+    /// This test is designed to check that the contracts on using a Id in
+    /// a hashmap are not violated for reference-accelerated lookups
+    #[test]
+    fn test_key_hashing_borrow() {
+        let mut map: HashMap<Id, bool> = HashMap::new();
+        let id1 = Id {
+            name: b"hello".to_vec(),
+            mtype: Type::Counter,
+            tags: vec![],
+        };
+        map.insert(id1, true);
+        // Generate an id right from a metric
+        let owned: Owned = PDU::parse(Bytes::from_static(b"hello:3|c|@1.0"))
+            .unwrap()
+            .try_into()
+            .unwrap();
+
+        assert_eq!(map.get(&owned.id), Some(&true));
+    }
+
     pub mod convert {
         use super::*;
 
@@ -633,7 +722,7 @@ pub mod test {
             let converted = super::super::convert::to_inline_tags(parsed);
             assert_eq!(
                 b"foo.bar.__atag=avalue.__tags=value".to_vec(),
-                converted.name
+                converted.id.name
             );
         }
     }

@@ -13,5 +13,6 @@ pub struct Output<'a> {
     pub route: &'a [config::Route],
 }
 pub trait Processor {
+    fn tick(&self, _time: std::time::SystemTime) -> () {}
     fn provide_statsd(&self, sample: &Sample) -> Option<Output>;
 }

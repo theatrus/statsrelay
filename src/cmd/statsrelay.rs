@@ -92,6 +92,7 @@ async fn server(scope: stats::Scope, config: Config, opts: Options) {
     //
     // SIGHUP will attempt to reload backend configurations as well as any
     // discovery changes.
+    let discovery_backends = backends.clone();
     tokio::spawn(async move {
         let dconfig = config.discovery.unwrap_or_default();
         let discovery_cache = discovery::Cache::new();
@@ -100,9 +101,10 @@ async fn server(scope: stats::Scope, config: Config, opts: Options) {
         loop {
             info!("loading configuration and updating backends");
             backend_reloads.inc();
-            let config = load_backend_configs(&discovery_cache, &backends, opts.config.as_ref())
-                .await
-                .unwrap();
+            let config =
+                load_backend_configs(&discovery_cache, &discovery_backends, opts.config.as_ref())
+                    .await
+                    .unwrap();
             let dconfig = config.discovery.unwrap_or_default();
 
             tokio::select! {
@@ -118,9 +120,16 @@ async fn server(scope: stats::Scope, config: Config, opts: Options) {
         }
     });
 
+    // Start processing processor tickers
+    let ticker_backends = backends.clone();
+    tokio::spawn(backends::ticker(tripwire.clone(), ticker_backends));
+
+    // Wait for the server to finish
     while let Some(name) = run.next().await {
         debug!("server {} exited", name)
     }
+    debug!("forcing processor tick to flush");
+    backends.processor_tick(std::time::SystemTime::now());
 }
 
 fn main() -> anyhow::Result<()> {

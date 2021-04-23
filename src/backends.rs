@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
+use stream_cancel::Tripwire;
 use thiserror::Error;
 
 use crate::discovery;
@@ -85,12 +86,23 @@ impl BackendsInner {
                         .get(dest.route_to.as_str())
                         .map(|proc| proc.provide_statsd(pdu))
                         .flatten()
-                        .map(|chain| { 
-                            self.provide_statsd(&chain.new_sample.as_ref().unwrap_or(pdu), chain.route.as_ref())
+                        .map(|chain| {
+                            self.provide_statsd(
+                                &chain.new_sample.as_ref().unwrap_or(pdu),
+                                chain.route.as_ref(),
+                            )
                         });
                 }
             })
             .collect();
+    }
+
+    /// Provide a periodic "tick" function to drive processors background
+    /// housekeeping tasks asynchronously.
+    fn processor_tick(&self, now: std::time::SystemTime) {
+        for (_, proc) in self.processors.iter() {
+            proc.tick(now);
+        }
     }
 }
 
@@ -148,6 +160,23 @@ impl Backends {
 
     pub fn provide_statsd_pdu(&self, pdu: statsd_proto::PDU, route: &[config::Route]) {
         self.inner.read().provide_statsd(&Sample::PDU(pdu), route)
+    }
+
+    pub fn processor_tick(&self, now: std::time::SystemTime) {
+        self.inner.read().processor_tick(now);
+    }
+}
+
+pub async fn ticker(tripwire: Tripwire, backends: Backends) {
+    let mut ticker = tokio::time::interval_at(
+        tokio::time::Instant::now(),
+        tokio::time::Duration::from_secs(1),
+    );
+    loop {
+        tokio::select! {
+            _ = tripwire.clone() => { return; }
+            _ = ticker.tick() => { backends.processor_tick(std::time::SystemTime::now() )}
+        }
     }
 }
 

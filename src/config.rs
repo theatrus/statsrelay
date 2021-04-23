@@ -95,7 +95,9 @@ pub mod processor {
 
     #[derive(Serialize, Deserialize, Debug, Clone)]
     pub struct Cardinality {
-        pub limit: u32,
+        pub size_limit: usize,
+        pub rotate_after_seconds: u64,
+        pub buckets: usize,
         pub route: Vec<Route>,
     }
 }
