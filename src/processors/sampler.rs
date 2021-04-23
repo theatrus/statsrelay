@@ -8,7 +8,6 @@ use parking_lot::Mutex;
 use std::cell::RefCell;
 use thiserror::Error;
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::convert::TryInto;
 
@@ -69,8 +68,8 @@ impl processors::Processor for Sampler {
             Err(_) => None,
             Ok(owned) if owned.metric_type() == &Type::Timer => unimplemented!(),
             Ok(owned) if owned.metric_type() == &Type::Counter => {
-                let lock = self.counters.lock();
-                let mut hm = lock.borrow_mut();
+                //let lock = self.counters.lock();
+                //let mut hm = lock.borrow_mut();
                 unimplemented!();
             }
             Ok(owned) if owned.metric_type() == &Type::Gauge => {

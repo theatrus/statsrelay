@@ -8,7 +8,6 @@ use thiserror::Error;
 use crate::discovery;
 use crate::stats;
 use crate::statsd_backend::StatsdBackend;
-use crate::statsd_proto;
 use crate::statsd_proto::Sample;
 use crate::{config, processors};
 
@@ -182,7 +181,12 @@ pub async fn ticker(tripwire: Tripwire, backends: Backends) {
     loop {
         tokio::select! {
             _ = tripwire.clone() => { return; }
-            _ = ticker.tick() => { backends.processor_tick(std::time::SystemTime::now() )}
+            _ = ticker.tick() => {
+                let back = backends.clone();
+                tokio::task::spawn_blocking(move || {
+                    back.processor_tick(std::time::SystemTime::now())
+                }).await.unwrap();
+            }
         }
     }
 }
@@ -192,7 +196,9 @@ pub mod test {
 
     use super::*;
     use crate::processors::{self, Processor};
+    use crate::statsd_proto;
     use crate::statsd_proto::Parsed;
+
     use std::convert::TryInto;
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;

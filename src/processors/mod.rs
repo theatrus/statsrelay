@@ -1,6 +1,6 @@
+use super::backends::Backends;
 use crate::config;
 use crate::statsd_proto::Sample;
-use super::backends::Backends;
 
 pub mod cardinality;
 pub mod sampler;
