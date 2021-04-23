@@ -21,7 +21,7 @@ use crate::backends::Backends;
 use crate::config;
 use crate::config::StatsdServerConfig;
 use crate::stats;
-use crate::statsd_proto::PDU;
+use crate::statsd_proto::{Sample, PDU};
 
 const TCP_READ_TIMEOUT: Duration = Duration::from_secs(62);
 const READ_BUFFER: usize = 8192;
@@ -71,13 +71,12 @@ impl UdpServer {
                 match socket.recv_from(&mut buf[..]) {
                     Ok((size, _remote)) => {
                         incoming_bytes.inc_by(size as f64);
-                        let mut r = process_buffer_newlines(&mut buf);
+                        let r = process_buffer_newlines(&mut buf);
                         processed_lines.inc_by(r.len() as f64);
-                        for p in r.drain(..) {
-                            backends.provide_statsd_pdu(p, &route);
-                        }
+                        backends.provide_statsd_slice(&r, &route);
+
                         match PDU::parse(buf.clone().freeze()) {
-                            Ok(p) => backends.provide_statsd_pdu(p, &route),
+                            Ok(p) => backends.provide_statsd(&Sample::PDU(p), &route),
                             Err(_) => (),
                         }
                         buf.clear();
@@ -91,8 +90,8 @@ impl UdpServer {
     }
 }
 
-fn process_buffer_newlines(buf: &mut BytesMut) -> Vec<PDU> {
-    let mut ret: Vec<PDU> = Vec::new();
+fn process_buffer_newlines(buf: &mut BytesMut) -> Vec<Sample> {
+    let mut ret: Vec<Sample> = Vec::new();
     loop {
         match memchr(b'\n', &buf) {
             None => break,
@@ -109,7 +108,7 @@ fn process_buffer_newlines(buf: &mut BytesMut) -> Vec<PDU> {
                     continue;
                 }
                 if let Ok(pdu) = PDU::parse(frozen) {
-                    ret.push(pdu);
+                    ret.push(Sample::PDU(pdu));
                 }
             }
         };
@@ -153,16 +152,14 @@ async fn client_handler<T>(
                 break;
             }
             Ok(bytes) if bytes == 0 => {
-                let mut r = process_buffer_newlines(&mut buf);
+                let r = process_buffer_newlines(&mut buf);
                 processed_lines.inc_by(r.len() as f64);
 
-                for p in r.drain(..) {
-                    backends.provide_statsd_pdu(p, &route);
-                }
+                backends.provide_statsd_slice(&r, &route);
                 let remaining = buf.clone().freeze();
                 match PDU::parse(remaining) {
                     Ok(p) => {
-                        backends.provide_statsd_pdu(p, &route);
+                        backends.provide_statsd(&Sample::PDU(p), &route);
                         ()
                     }
                     Err(_) => (),
@@ -174,11 +171,9 @@ async fn client_handler<T>(
             Ok(bytes) => {
                 incoming_bytes.inc_by(bytes as f64);
 
-                let mut r = process_buffer_newlines(&mut buf);
+                let r = process_buffer_newlines(&mut buf);
                 processed_lines.inc_by(r.len() as f64);
-                for p in r.drain(..) {
-                    backends.provide_statsd_pdu(p, &route);
-                }
+                backends.provide_statsd_slice(&r, &route);
             }
             Err(e) if e.kind() == ErrorKind::Other => {
                 // Ignoring the results of the write call here
@@ -330,8 +325,9 @@ pub mod test {
         b.put_slice(b"hello:1|c\r\nhello:1|c\nhello2");
         let r = process_buffer_newlines(&mut b);
         for w in r {
-            assert!(w.pdu_type() == b"c");
-            assert!(w.name() == b"hello");
+            let pdu: PDU = w.into();
+            assert!(pdu.pdu_type() == b"c");
+            assert!(pdu.name() == b"hello");
             found += 1
         }
         assert_eq!(2, found);
@@ -346,8 +342,9 @@ pub mod test {
         b.put_slice(b"status\r\nhello:1|c\nhello2");
         let r = process_buffer_newlines(&mut b);
         for w in r {
-            assert!(w.pdu_type() == b"c");
-            assert!(w.name() == b"hello");
+            let pdu: PDU = w.into();
+            assert!(pdu.pdu_type() == b"c");
+            assert!(pdu.name() == b"hello");
             found += 1
         }
         assert_eq!(1, found);

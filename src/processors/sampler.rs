@@ -67,10 +67,7 @@ impl processors::Processor for Sampler {
         let owned: Result<Owned, _> = sample.try_into();
         match owned {
             Err(_) => None,
-            Ok(owned) if owned.metric_type() == &Type::Timer => Some(Output {
-                route: &self.route_to,
-                new_sample: None,
-            }),
+            Ok(owned) if owned.metric_type() == &Type::Timer => unimplemented!(),
             Ok(owned) if owned.metric_type() == &Type::Counter => {
                 let lock = self.counters.lock();
                 let mut hm = lock.borrow_mut();

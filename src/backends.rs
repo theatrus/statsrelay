@@ -99,9 +99,9 @@ impl BackendsInner {
 
     /// Provide a periodic "tick" function to drive processors background
     /// housekeeping tasks asynchronously.
-    fn processor_tick(&self, now: std::time::SystemTime) {
+    fn processor_tick(&self, now: std::time::SystemTime, backends: &Backends) {
         for (_, proc) in self.processors.iter() {
-            proc.tick(now);
+            proc.tick(now, backends);
         }
     }
 }
@@ -158,12 +158,19 @@ impl Backends {
         self.inner.read().len()
     }
 
-    pub fn provide_statsd_pdu(&self, pdu: statsd_proto::PDU, route: &[config::Route]) {
-        self.inner.read().provide_statsd(&Sample::PDU(pdu), route)
+    pub fn provide_statsd(&self, pdu: &Sample, route: &[config::Route]) {
+        self.inner.read().provide_statsd(pdu, route)
+    }
+
+    pub fn provide_statsd_slice(&self, pdu: &[Sample], route: &[config::Route]) {
+        let lock = self.inner.read();
+        for p in pdu {
+            lock.provide_statsd(p, route);
+        }
     }
 
     pub fn processor_tick(&self, now: std::time::SystemTime) {
-        self.inner.read().processor_tick(now);
+        self.inner.read().processor_tick(now, self);
     }
 }
 
@@ -271,7 +278,7 @@ pub mod test {
             route_type: config::RouteType::Processor,
             route_to: "tag".to_owned(),
         }];
-        backend.provide_statsd_pdu(pdu, &route);
+        backend.provide_statsd(&Sample::PDU(pdu), &route);
 
         // Check how many messages the mock has received
         let actual_count = counter.load(Ordering::Acquire);
@@ -313,7 +320,7 @@ pub mod test {
             route_type: config::RouteType::Processor,
             route_to: "tag".to_owned(),
         }];
-        backend.provide_statsd_pdu(pdu, &route);
+        backend.provide_statsd(&Sample::PDU(pdu), &route);
 
         // Check how many messages the mock has received
         let actual_count = counter1.load(Ordering::Acquire);

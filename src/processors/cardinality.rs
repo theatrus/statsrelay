@@ -1,6 +1,8 @@
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime};
 
+use crate::backends::Backends;
+
 use super::super::config;
 use super::super::statsd_proto::Sample;
 use super::{Output, Processor};
@@ -121,7 +123,7 @@ impl Processor for Cardinality {
         })
     }
 
-    fn tick(&self, _time: std::time::SystemTime) -> () {
+    fn tick(&self, _time: std::time::SystemTime, _backends: &Backends) -> () {
         self.rotate();
     }
 }
