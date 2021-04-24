@@ -14,9 +14,9 @@ use std::{
 /// An Owned identifier for a statsd message
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Id {
-    name: Vec<u8>,
-    mtype: Type,
-    tags: Vec<Tag>,
+    pub name: Vec<u8>,
+    pub mtype: Type,
+    pub tags: Vec<Tag>,
 }
 
 impl Hash for Id {
@@ -101,8 +101,8 @@ pub enum ParseError {
 /// Set of key/value fields for a tag.
 #[derive(Debug, Clone, Eq)]
 pub struct Tag {
-    name: Vec<u8>,
-    value: Vec<u8>,
+    pub name: Vec<u8>,
+    pub value: Vec<u8>,
 }
 
 impl Hash for Tag {
@@ -224,6 +224,16 @@ pub struct Owned {
 impl Hash for Owned {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
+    }
+}
+
+impl Owned {
+    pub fn new(id: Id, value: f64, sample_rate: Option<f64>) -> Self {
+        Owned {
+            id: id,
+            value: value,
+            sample_rate: sample_rate,
+        }
     }
 }
 

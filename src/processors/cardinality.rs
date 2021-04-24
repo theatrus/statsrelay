@@ -130,6 +130,10 @@ impl Processor for Cardinality {
 
 #[cfg(test)]
 pub mod test {
+    use std::vec;
+
+    use crate::statsd_proto::{Owned, Id, Type};
+
     use super::*;
 
     #[test]
@@ -170,5 +174,31 @@ pub mod test {
         assert!(mc.contains(&a));
         assert!(!mc.contains(&b));
         assert!(mc.len() == 1);
+    }
+
+    #[test]
+    fn test_cardinality_limit() {
+        let names: Vec<Sample> = (0..400).map(|val| {
+            let id = Id {
+                name: format!("metric.{}", val as u32).as_bytes().to_vec(),
+                mtype: Type::Counter,
+                tags: vec![],
+            };
+            Sample::Parsed(Owned::new(id, 1.0, None))
+        }).collect();
+
+        let config = config::processor::Cardinality{
+            size_limit: 100 as usize,
+            rotate_after_seconds: 10,
+            buckets: 2,
+            route: vec![],
+        };
+        let filter = Cardinality::new(&config);
+        for name in &names[0..101] {
+            assert!(filter.provide_statsd(name).is_some());
+        }
+        for name in &names[101..] {
+            assert!(filter.provide_statsd(name).is_none(), "sample {:?} was allowed", name);
+        }
     }
 }

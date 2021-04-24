@@ -55,6 +55,7 @@ jemallocator = "0.3.0"
 cuckoofilter = "0"
 hyperloglog = "1"
 ahash = "0.7"
+rand = "0.8"
 
 [[bench]]
 name = "statsd_benchmark"

@@ -11,6 +11,8 @@ use crate::statsd_backend::StatsdBackend;
 use crate::statsd_proto::Sample;
 use crate::{config, processors};
 
+use log::info;
+
 #[derive(Error, Debug)]
 pub enum BackendError {
     #[error("Index not valid for backend {0}")]
@@ -87,7 +89,7 @@ impl BackendsInner {
                         .flatten()
                         .map(|chain| {
                             self.provide_statsd(
-                                &chain.new_sample.as_ref().unwrap_or(pdu),
+                                chain.new_sample.as_ref().unwrap_or(pdu),
                                 chain.route.as_ref(),
                             )
                         });

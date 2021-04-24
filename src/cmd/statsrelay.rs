@@ -185,12 +185,15 @@ async fn load_processors(
     for (name, cp) in processors.iter() {
         let proc: Box<dyn processors::Processor + Send + Sync> = match cp {
             config::Processor::TagConverter(tc) => {
+                info!("processor tag_converter: {:?}", tc);
                 Box::new(processors::tag::Normalizer::new(tc.route.as_ref()))
             }
             config::Processor::Sampler(sampler) => {
+                info!("processor sampler: {:?}", sampler);
                 Box::new(processors::sampler::Sampler::new(sampler)?)
             }
             config::Processor::Cardinality(cardinality) => {
+                info!("processor cardinality: {:?}", cardinality);
                 Box::new(processors::cardinality::Cardinality::new(cardinality))
             }
         };

@@ -1753,6 +1753,7 @@ dependencies = [
  "murmur3",
  "parking_lot",
  "prometheus",
+ "rand 0.8.3",
  "regex",
  "rusoto_core",
  "rusoto_s3",
