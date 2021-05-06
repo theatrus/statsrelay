@@ -42,6 +42,14 @@ struct Counter {
     samples: f64,
 }
 
+impl Counter {
+    fn to_event(&self, id: &Id) -> Event {
+        let value = self.value / self.samples;
+        let sample_rate = 1_f64 / self.samples;
+        Event::Parsed(Owned::new(id.clone(), value, Some(sample_rate)))
+    }
+}
+
 #[derive(Debug)]
 struct Timer {
     values: Vec<f64>,
@@ -84,6 +92,12 @@ impl Timer {
 #[derive(Debug, Default)]
 struct Gauge {
     value: f64,
+}
+
+impl Gauge {
+    fn to_event(&self, id: &Id) -> Event {
+        Event::Parsed(Owned::new(id.clone(), self.value, None))
+    }
 }
 
 #[derive(Debug)]
@@ -219,15 +233,13 @@ impl processors::Processor for Sampler {
 
         let mut gauges = self.gauges.lock().replace(HashMap::default());
         for (id, gauge) in gauges.drain() {
-            let pdu = Event::Parsed(Owned::new(id.clone(), gauge.value, None));
+            let pdu = gauge.to_event(&id);
             backends.provide_statsd(&pdu, self.route_to.as_ref())
         }
 
         let mut counters = self.counters.lock().replace(HashMap::default());
         for (id, counter) in counters.drain() {
-            let value = counter.value / counter.samples;
-            let sample_rate = 1_f64 / counter.samples;
-            let pdu = Event::Parsed(Owned::new(id.clone(), value, Some(sample_rate)));
+            let pdu = counter.to_event(&id);
             backends.provide_statsd(&pdu, self.route_to.as_ref());
         }
 
