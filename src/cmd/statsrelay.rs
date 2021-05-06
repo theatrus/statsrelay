@@ -37,6 +37,9 @@ struct Options {
 
     #[structopt(short = "t", long = "--threaded")]
     pub threaded: bool,
+
+    #[structopt(long = "--version")]
+    pub version: bool,
 }
 
 /// The main server invocation, for a given configuration, options and stats
@@ -138,6 +141,14 @@ fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     let opts = Options::from_args();
 
+    if opts.version {
+        println!(
+            "statsrelay - {} - {}",
+            statsrelay::built_info::PKG_VERSION,
+            statsrelay::built_info::GIT_COMMIT_HASH.unwrap_or("unknown")
+        );
+        return Ok(());
+    }
     info!(
         "statsrelay loading - {} - {}",
         statsrelay::built_info::PKG_VERSION,
