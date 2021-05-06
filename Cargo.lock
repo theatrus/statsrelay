@@ -1759,6 +1759,7 @@ dependencies = [
  "rusoto_s3",
  "serde",
  "serde_json",
+ "smallvec",
  "stream-cancel",
  "structopt",
  "tempfile",

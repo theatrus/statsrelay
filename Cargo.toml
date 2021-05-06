@@ -37,6 +37,7 @@ chrono = "0.4"
 dashmap = "4"
 async-stream = "0.3"
 lexical = "5"
+smallvec = "1"
 
 # For discovery
 rusoto_core = "0.46"
