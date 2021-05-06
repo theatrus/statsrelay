@@ -12,7 +12,7 @@ use std::{
 };
 
 /// An Owned identifier for a statsd message
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Eq)]
 pub struct Id {
     pub name: Vec<u8>,
     pub mtype: Type,
@@ -30,9 +30,15 @@ impl Hash for Id {
     }
 }
 
+impl PartialEq for Id {
+    fn eq(&self, other: &Id) -> bool {
+        self.name == other.name && self.mtype == other.mtype && self.tags == other.tags
+    }
+}
+
 /// The type of a statsd line or metric. The common types are covered, including
 /// a few extensions such as Set and DirectGauge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Eq)]
 pub enum Type {
     Counter,
     Timer,
@@ -45,7 +51,7 @@ impl TryFrom<&[u8]> for Type {
     type Error = ParseError;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        if value.len() < 1 && value.len() > 2 {
+        if value.is_empty() && value.len() > 2 {
             return Err(ParseError::InvalidType);
         }
         match value {
@@ -75,6 +81,20 @@ impl Hash for Type {
     fn hash<H: Hasher>(&self, state: &mut H) {
         let key: &[u8] = self.into();
         key.hash(state);
+    }
+}
+
+impl PartialEq for Type {
+    fn eq(&self, other: &Type) -> bool {
+        use Type::*;
+        matches!(
+            (self, other),
+            (Counter, Counter)
+                | (Timer, Timer)
+                | (Gauge, Gauge)
+                | (DirectGauge, DirectGauge)
+                | (Set, Set)
+        )
     }
 }
 
@@ -126,7 +146,7 @@ impl PartialOrd for Tag {
 
 impl PartialEq for Tag {
     fn eq(&self, other: &Self) -> bool {
-        return self.name == other.name;
+        self.name == other.name
     }
 }
 
@@ -141,61 +161,61 @@ impl PartialEq for Tag {
 /// ```
 /// use statsrelay::statsd_proto;
 /// use bytes::Bytes;
-/// use statsrelay::statsd_proto::Sample;
+/// use statsrelay::statsd_proto::Event;
 ///
 /// let input = Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0");
-/// let sample = &Sample::PDU(statsd_proto::PDU::parse(input).unwrap());
-/// let parsed: statsd_proto::PDU = sample.into();
+/// let sample = &Event::Pdu(statsd_proto::Pdu::parse(input).unwrap());
+/// let parsed: statsd_proto::Pdu = sample.into();
 /// ```
 #[derive(Clone, Debug)]
-pub enum Sample {
-    PDU(PDU),
+pub enum Event {
+    Pdu(Pdu),
     Parsed(Owned),
 }
 
-impl Hash for Sample {
+impl Hash for Event {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
-            Sample::PDU(pdu) => pdu.hash(state),
-            Sample::Parsed(parsed) => parsed.hash(state),
+            Event::Pdu(pdu) => pdu.hash(state),
+            Event::Parsed(parsed) => parsed.hash(state),
         }
     }
 }
 
-impl TryFrom<&Sample> for Owned {
+impl TryFrom<&Event> for Owned {
     type Error = ParseError;
-    fn try_from(inp: &Sample) -> Result<Self, Self::Error> {
+    fn try_from(inp: &Event) -> Result<Self, Self::Error> {
         match inp {
-            Sample::Parsed(p) => Ok(p.to_owned()),
-            Sample::PDU(pdu) => pdu.try_into(),
+            Event::Parsed(p) => Ok(p.to_owned()),
+            Event::Pdu(pdu) => pdu.try_into(),
         }
     }
 }
 
-impl TryFrom<Sample> for Owned {
+impl TryFrom<Event> for Owned {
     type Error = ParseError;
-    fn try_from(inp: Sample) -> Result<Self, Self::Error> {
+    fn try_from(inp: Event) -> Result<Self, Self::Error> {
         match inp {
-            Sample::Parsed(p) => Ok(p),
-            Sample::PDU(pdu) => pdu.try_into(),
+            Event::Parsed(p) => Ok(p),
+            Event::Pdu(pdu) => pdu.try_into(),
         }
     }
 }
 
-impl From<Sample> for PDU {
-    fn from(inp: Sample) -> Self {
+impl From<Event> for Pdu {
+    fn from(inp: Event) -> Self {
         match inp {
-            Sample::PDU(pdu) => pdu,
-            Sample::Parsed(p) => p.into(),
+            Event::Pdu(pdu) => pdu,
+            Event::Parsed(p) => p.into(),
         }
     }
 }
 
-impl From<&Sample> for PDU {
-    fn from(inp: &Sample) -> Self {
+impl From<&Event> for Pdu {
+    fn from(inp: &Event) -> Self {
         match inp {
-            Sample::PDU(pdu) => pdu.clone(),
-            Sample::Parsed(p) => p.into(),
+            Event::Pdu(pdu) => pdu.clone(),
+            Event::Parsed(p) => p.into(),
         }
     }
 }
@@ -214,7 +234,7 @@ pub trait Parsed {
 /// Gives an owned structure which represents a parsed statsd protocol unit
 /// which owns all of its fields. When parsing, no canonicalization is performed
 /// by default.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Owned {
     id: Id,
     value: f64,
@@ -227,12 +247,18 @@ impl Hash for Owned {
     }
 }
 
+impl PartialEq for Owned {
+    fn eq(&self, other: &Owned) -> bool {
+        self.id.eq(&other.id) && self.value == other.value && self.sample_rate == other.sample_rate
+    }
+}
+
 impl Owned {
     pub fn new(id: Id, value: f64, sample_rate: Option<f64>) -> Self {
         Owned {
-            id: id,
-            value: value,
-            sample_rate: sample_rate,
+            id,
+            value,
+            sample_rate,
         }
     }
 }
@@ -258,18 +284,18 @@ impl Parsed for Owned {
     }
 }
 
-impl TryFrom<PDU> for Owned {
+impl TryFrom<Pdu> for Owned {
     type Error = ParseError;
 
-    fn try_from(value: PDU) -> Result<Self, Self::Error> {
+    fn try_from(value: Pdu) -> Result<Self, Self::Error> {
         (&value).try_into()
     }
 }
 
-impl TryFrom<&PDU> for Owned {
+impl TryFrom<&Pdu> for Owned {
     type Error = ParseError;
 
-    fn try_from(pdu: &PDU) -> Result<Self, Self::Error> {
+    fn try_from(pdu: &Pdu) -> Result<Self, Self::Error> {
         let value = match lexical::parse::<f64, _>(pdu.value()) {
             Ok(v) => v,
             Err(_) => return Err(ParseError::InvalidValue),
@@ -285,24 +311,24 @@ impl TryFrom<&PDU> for Owned {
         let tags = pdu.tags().map(|v| parse_tags(v)).transpose()?;
         let id = Id {
             name: pdu.name().to_vec(),
-            mtype: mtype,
+            mtype,
             tags: tags.unwrap_or_default(),
         };
         Ok(Owned {
-            id: id,
-            value: value,
-            sample_rate: sample_rate,
+            id,
+            value,
+            sample_rate,
         })
     }
 }
 
-impl From<Owned> for PDU {
+impl From<Owned> for Pdu {
     fn from(input: Owned) -> Self {
         (&input).into()
     }
 }
 
-impl From<&Owned> for PDU {
+impl From<&Owned> for Pdu {
     fn from(input: &Owned) -> Self {
         let mut bytes = Vec::with_capacity(input.id.name.len() + (input.id.tags.len() * 64) + 64);
 
@@ -325,7 +351,7 @@ impl From<&Owned> for PDU {
             None
         };
 
-        let tags_index = if input.id.tags.len() > 0 {
+        let tags_index = if !input.id.tags.is_empty() {
             bytes.extend_from_slice(b"|#");
             let start = bytes.len();
             let mut peek = input.id.tags.iter().peekable();
@@ -333,7 +359,7 @@ impl From<&Owned> for PDU {
                 bytes.extend(&tag.name);
                 bytes.push(b':');
                 bytes.extend(&tag.value);
-                if let Some(_) = peek.peek() {
+                if peek.peek().is_some() {
                     bytes.push(b',');
                 }
             }
@@ -341,13 +367,13 @@ impl From<&Owned> for PDU {
         } else {
             None
         };
-        PDU {
+        Pdu {
             underlying: Bytes::from(bytes),
-            value_index: value_index,
-            type_index: type_index,
-            type_index_end: type_index_end,
-            sample_rate_index: sample_rate_index,
-            tags_index: tags_index,
+            value_index,
+            type_index,
+            type_index_end,
+            sample_rate_index,
+            tags_index,
         }
     }
 }
@@ -357,7 +383,7 @@ pub mod convert {
     /// Convert from external tags to internal tags. Does not check for
     /// collisions of existing inline tags with the newly generated inline tags.
     pub fn to_inline_tags(mut input: Owned) -> Owned {
-        if input.id.tags.len() == 0 {
+        if input.id.tags.is_empty() {
             return input;
         }
         input.id.tags.sort();
@@ -371,12 +397,12 @@ pub mod convert {
             name.extend(tag.value);
         }
         let id = Id {
-            name: name,
+            name,
             mtype: input.id.mtype,
             tags: vec![],
         };
         Owned {
-            id: id,
+            id,
             value: input.value,
             sample_rate: input.sample_rate,
         }
@@ -421,8 +447,8 @@ fn parse_tags(input: &[u8]) -> Result<Vec<Tag>, ParseError> {
 /// line-delimitated message. This PDU type owns an incoming message and can
 /// offer references to protocol fields. It only performs limited parsing of the
 /// protocol unit.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PDU {
+#[derive(Debug, Clone)]
+pub struct Pdu {
     underlying: Bytes,
     value_index: usize,
     type_index: usize,
@@ -431,14 +457,14 @@ pub struct PDU {
     tags_index: Option<(usize, usize)>,
 }
 
-impl Hash for PDU {
+impl Hash for Pdu {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name().hash(state);
         self.pdu_type().hash(state);
     }
 }
 
-impl PDU {
+impl Pdu {
     pub fn name(&self) -> &[u8] {
         &self.underlying[0..self.value_index - 1]
     }
@@ -463,7 +489,11 @@ impl PDU {
         self.underlying.len()
     }
 
-    pub fn as_ref(&self) -> &[u8] {
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
         self.underlying.as_ref()
     }
 
@@ -477,7 +507,7 @@ impl PDU {
         buf.put(suffix);
         buf.put(self.underlying[self.value_index - 1..].as_ref());
 
-        PDU {
+        Pdu {
             underlying: buf.freeze(),
             value_index: self.value_index + offset,
             type_index: self.type_index + offset,
@@ -499,12 +529,12 @@ impl PDU {
         // To support inner ':' symbols in a metric name (more common than you
         // think) we'll first find the index of the first type separator, and
         // then do a walk to find the last ':' symbol before that.
-        let type_index = memchr('|' as u8, &line).ok_or(ParseError::InvalidLine)? + 1;
+        let type_index = memchr(b'|', &line).ok_or(ParseError::InvalidLine)? + 1;
 
         loop {
-            let value_check_index = memchr(':' as u8, &line[value_index..type_index]);
+            let value_check_index = memchr(b':', &line[value_index..type_index]);
             match (value_check_index, value_index) {
-                (None, x) if x <= 0 => return Err(ParseError::InvalidType),
+                (None, x) if x == 0 => return Err(ParseError::InvalidType),
                 (None, _) => break,
                 _ => (),
             }
@@ -516,7 +546,7 @@ impl PDU {
 
         let mut scan_index = type_index;
         loop {
-            let index = memchr('|' as u8, &line[scan_index..]).map(|v| v + scan_index);
+            let index = memchr(b'|', &line[scan_index..]).map(|v| v + scan_index);
             match index {
                 None => break,
                 Some(x) if x + 2 >= length => break,
@@ -542,13 +572,13 @@ impl PDU {
             }
             scan_index = index.unwrap() + 1;
         }
-        Ok(PDU {
+        Ok(Pdu {
             underlying: line,
             value_index,
             type_index,
             type_index_end,
-            sample_rate_index: sample_rate_index,
-            tags_index: tags_index,
+            sample_rate_index,
+            tags_index,
         })
     }
 }
@@ -568,14 +598,14 @@ pub mod test {
         ];
         for buf in valid {
             println!("{}", String::from_utf8(buf.clone())?);
-            PDU::parse(buf.into())?;
+            Pdu::parse(buf.into())?;
         }
         Ok(())
     }
 
     #[test]
     fn simple_pdu() {
-        let pdu = PDU::parse(Bytes::from_static(b"foo.car:bar:3.0|c")).unwrap();
+        let pdu = Pdu::parse(Bytes::from_static(b"foo.car:bar:3.0|c")).unwrap();
         assert_eq!(pdu.name(), b"foo.car:bar");
         assert_eq!(pdu.value(), b"3.0");
         assert_eq!(pdu.pdu_type(), b"c")
@@ -583,7 +613,7 @@ pub mod test {
 
     #[test]
     fn tagged_pdu() {
-        let pdu = PDU::parse(Bytes::from_static(b"foo.bar:3|c|@1.0|#tags")).unwrap();
+        let pdu = Pdu::parse(Bytes::from_static(b"foo.bar:3|c|@1.0|#tags")).unwrap();
         assert_eq!(pdu.name(), b"foo.bar");
         assert_eq!(pdu.value(), b"3");
         assert_eq!(pdu.pdu_type(), b"c");
@@ -593,7 +623,7 @@ pub mod test {
 
     #[test]
     fn tagged_pdu_reverse() {
-        let pdu = PDU::parse(Bytes::from_static(b"foo.bar:3|c|#tags|@1.0")).unwrap();
+        let pdu = Pdu::parse(Bytes::from_static(b"foo.bar:3|c|#tags|@1.0")).unwrap();
         assert_eq!(pdu.name(), b"foo.bar");
         assert_eq!(pdu.value(), b"3");
         assert_eq!(pdu.pdu_type(), b"c");
@@ -603,7 +633,7 @@ pub mod test {
 
     #[test]
     fn prefix_suffix_test() {
-        let opdu = PDU::parse(Bytes::from_static(b"foo.bar:3|c|#tags|@1.0")).unwrap();
+        let opdu = Pdu::parse(Bytes::from_static(b"foo.bar:3|c|#tags|@1.0")).unwrap();
         let pdu = opdu.with_prefix_suffix(b"aa", b"bbb");
         assert_eq!(pdu.name(), b"aafoo.barbbb");
         assert_eq!(pdu.value(), b"3");
@@ -644,7 +674,7 @@ pub mod test {
     fn test_parse_tag_none() {
         let tag_v = b"";
         let r = parse_tags(tag_v).unwrap();
-        assert!(r.len() == 0);
+        assert!(r.is_empty());
     }
 
     #[test]
@@ -675,7 +705,7 @@ pub mod test {
 
     #[test]
     fn parsed_simple() {
-        let pdu = PDU::parse(Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0")).unwrap();
+        let pdu = Pdu::parse(Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0")).unwrap();
         let parsed: Owned = (&pdu).try_into().unwrap();
         assert_eq!(parsed.value, 3.0);
         assert_eq!(parsed.id.name, b"foo.bar");
@@ -692,9 +722,9 @@ pub mod test {
 
     #[test]
     fn convert_roundtrip() {
-        let pdu = PDU::parse(Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0")).unwrap();
+        let pdu = Pdu::parse(Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0")).unwrap();
         let parsed: Owned = (&pdu).try_into().unwrap();
-        let pdu2: PDU = (&parsed).into();
+        let pdu2: Pdu = (&parsed).into();
         let parsed2: Owned = (&pdu2).try_into().unwrap();
         assert_eq!(parsed, parsed2);
     }
@@ -711,7 +741,7 @@ pub mod test {
         };
         map.insert(id1, true);
         // Generate an id right from a metric
-        let owned: Owned = PDU::parse(Bytes::from_static(b"hello:3|c|@1.0"))
+        let owned: Owned = Pdu::parse(Bytes::from_static(b"hello:3|c|@1.0"))
             .unwrap()
             .try_into()
             .unwrap();
@@ -724,7 +754,7 @@ pub mod test {
 
         #[test]
         fn convert_tags() {
-            let pdu = PDU::parse(Bytes::from_static(
+            let pdu = Pdu::parse(Bytes::from_static(
                 b"foo.bar:3|c|#tags:value,atag:avalue|@1.0",
             ))
             .unwrap();

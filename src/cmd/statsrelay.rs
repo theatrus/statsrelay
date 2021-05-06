@@ -237,7 +237,7 @@ async fn load_backend_configs(
         }
     }
     let existing_backends = backends.backend_names();
-    let config_backends: HashSet<String> = duplicate.keys().map(|s| s.clone()).collect();
+    let config_backends: HashSet<String> = duplicate.keys().cloned().collect();
     let difference = existing_backends.difference(&config_backends);
     for remove in difference {
         if let Err(e) = backends.remove_statsd_backend(remove) {

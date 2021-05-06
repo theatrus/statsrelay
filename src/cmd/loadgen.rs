@@ -18,7 +18,7 @@ async fn main() {
     let options = Options::from_args();
     let mut stream = TcpStream::connect(options.endpoint).await.unwrap();
     let mut buf = BytesMut::with_capacity(131072);
-    let mut counter = 0 as u64;
+    let mut counter = 0_u64;
     let mut last_time = Local::now();
     loop {
         for _ in 0..1 {

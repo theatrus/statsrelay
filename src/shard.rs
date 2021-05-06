@@ -1,12 +1,11 @@
-use murmur3;
 use std::io::Cursor;
 
-use crate::statsd_proto::PDU as StatsdPDU;
+use crate::statsd_proto::Pdu;
 
 // HASHLIB_SEED same as the legacy statsrelay code base
 const HASHLIB_SEED: u32 = 0xaccd3d34;
 
-pub fn statsrelay_compat_hash(pdu: &StatsdPDU) -> u32 {
+pub fn statsrelay_compat_hash(pdu: &Pdu) -> u32 {
     murmur3::murmur3_32(&mut Cursor::new(pdu.name()), HASHLIB_SEED).unwrap_or(0)
 }
 
@@ -29,6 +28,10 @@ impl<C: Send + Sync + 'static> Ring<C> {
         self.members.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn pick_from(&self, code: u32) -> &C {
         let l = self.members.len();
         self.members.get(code as usize % l).unwrap()
@@ -45,6 +48,12 @@ impl<C: Send + Sync + 'static> Ring<C> {
 
     pub fn swap(&mut self, other: Ring<C>) {
         self.members = other.members;
+    }
+}
+
+impl<C: Send + Sync + 'static> Default for Ring<C> {
+    fn default() -> Self {
+        Ring::new()
     }
 }
 
@@ -77,25 +86,25 @@ pub mod test {
 
         assert_eq!(
             *ring.pick_from(statsrelay_compat_hash(
-                &StatsdPDU::parse(Bytes::copy_from_slice(b"apple:1|c")).unwrap()
+                &Pdu::parse(Bytes::copy_from_slice(b"apple:1|c")).unwrap()
             )),
             2
         );
         assert_eq!(
             *ring.pick_from(statsrelay_compat_hash(
-                &StatsdPDU::parse(Bytes::copy_from_slice(b"banana:1|c")).unwrap()
+                &Pdu::parse(Bytes::copy_from_slice(b"banana:1|c")).unwrap()
             )),
             3
         );
         assert_eq!(
             *ring.pick_from(statsrelay_compat_hash(
-                &StatsdPDU::parse(Bytes::copy_from_slice(b"orange:1|c")).unwrap()
+                &Pdu::parse(Bytes::copy_from_slice(b"orange:1|c")).unwrap()
             )),
             0
         );
         assert_eq!(
             *ring.pick_from(statsrelay_compat_hash(
-                &StatsdPDU::parse(Bytes::copy_from_slice(b"lemon:1|c")).unwrap()
+                &Pdu::parse(Bytes::copy_from_slice(b"lemon:1|c")).unwrap()
             )),
             1
         );

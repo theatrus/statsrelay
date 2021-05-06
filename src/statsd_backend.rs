@@ -9,7 +9,7 @@ use crate::shard::{statsrelay_compat_hash, Ring};
 use crate::stats;
 use crate::statsd_client::StatsdClient;
 use crate::statsd_proto;
-use crate::statsd_proto::Sample;
+use crate::statsd_proto::Event;
 
 use log::warn;
 
@@ -38,7 +38,7 @@ impl StatsdBackend {
         if conf.input_filter.is_some() {
             filters.push(conf.input_filter.as_ref().unwrap().clone());
         }
-        let input_filter = if filters.len() > 0 {
+        let input_filter = if !filters.is_empty() {
             Some(RegexSet::new(filters).unwrap())
         } else {
             None
@@ -48,7 +48,7 @@ impl StatsdBackend {
 
         // Use the same backend for the same endpoint address, caching the lookup locally
         let mut memoize: HashMap<String, StatsdClient> =
-            client_ref.map_or_else(|| HashMap::new(), |b| b.clients());
+            client_ref.map_or_else(HashMap::new, |b| b.clients());
 
         let use_endpoints = discovery_update
             .map(|u| u.sources())
@@ -69,8 +69,8 @@ impl StatsdBackend {
 
         let backend = StatsdBackend {
             conf: conf.clone(),
-            ring: ring,
-            input_filter: input_filter,
+            ring,
+            input_filter,
             warning_log: AtomicU64::new(0),
             backend_fails: stats.counter("backend_fails").unwrap(),
             backend_sends: stats.counter("backend_sends").unwrap(),
@@ -92,8 +92,8 @@ impl StatsdBackend {
         memoize
     }
 
-    pub fn provide_statsd(&self, input: &Sample) {
-        let pdu: statsd_proto::PDU = input.into();
+    pub fn provide_statsd(&self, input: &Event) {
+        let pdu: statsd_proto::Pdu = input.into();
         if !self
             .input_filter
             .as_ref()
@@ -105,7 +105,7 @@ impl StatsdBackend {
         let ring_read = &self.ring;
         let code = match ring_read.len() {
             0 => return, // In case of nothing to send, do nothing
-            1 => 1 as u32,
+            1 => 1_u32,
             _ => statsrelay_compat_hash(&pdu),
         };
         let client = ring_read.pick_from(code);

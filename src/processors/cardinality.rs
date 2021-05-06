@@ -1,11 +1,11 @@
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime};
 
+use super::super::config;
+use super::super::statsd_proto::Event;
+use super::{Output, Processor};
 use crate::backends::Backends;
 use crate::stats::{Counter, Scope};
-use super::super::config;
-use super::super::statsd_proto::Sample;
-use super::{Output, Processor};
 
 use ahash::AHasher;
 use cuckoofilter::{self, CuckooFilter};
@@ -28,7 +28,7 @@ where
     fn new(valid_until: SystemTime) -> Self {
         TimeBoundedCuckoo {
             filter: CuckooFilter::with_capacity(cuckoofilter::DEFAULT_CAPACITY),
-            valid_until: valid_until,
+            valid_until,
         }
     }
 }
@@ -53,7 +53,7 @@ where
             .map(|bucket| TimeBoundedCuckoo::new(now + (*window * bucket as u32)))
             .collect();
         MultiCuckoo {
-            buckets: buckets,
+            buckets,
             window: *window,
             filters: cuckoos,
         }
@@ -77,15 +77,12 @@ where
     }
 
     fn rotate(&mut self, with_time: SystemTime) {
-        match self.filters[0].valid_until.duration_since(with_time) {
+        if self.filters[0].valid_until.duration_since(with_time).is_err() {
             // duration_since returns err if the given is later then the valid_until time, aka expired
-            Err(_) => {
-                self.filters.remove(0);
-                self.filters.push(TimeBoundedCuckoo::new(
-                    with_time + (self.window * (self.buckets + 1) as u32),
-                ));
-            }
-            _ => (),
+            self.filters.remove(0);
+            self.filters.push(TimeBoundedCuckoo::new(
+                with_time + (self.window * (self.buckets + 1) as u32),
+            ));
         }
     }
 }
@@ -115,7 +112,7 @@ impl Cardinality {
 }
 
 impl Processor for Cardinality {
-    fn provide_statsd(&self, sample: &Sample) -> Option<Output> {
+    fn provide_statsd(&self, sample: &Event) -> Option<Output> {
         let mut filter = self.filter.lock();
         let contains = filter.contains(sample);
         if !contains && filter.len() > self.limit {
@@ -126,11 +123,11 @@ impl Processor for Cardinality {
         let _ = filter.add(sample);
         Some(Output {
             route: self.route.as_ref(),
-            new_samples: None,
+            new_events: None,
         })
     }
 
-    fn tick(&self, _time: std::time::SystemTime, _backends: &Backends) -> () {
+    fn tick(&self, _time: std::time::SystemTime, _backends: &Backends) {
         self.rotate();
     }
 }
@@ -139,7 +136,7 @@ impl Processor for Cardinality {
 pub mod test {
     use std::vec;
 
-    use crate::statsd_proto::{Owned, Id, Type};
+    use crate::statsd_proto::{Id, Owned, Type};
 
     use super::*;
 
@@ -185,17 +182,19 @@ pub mod test {
 
     #[test]
     fn test_cardinality_limit() {
-        let names: Vec<Sample> = (0..400).map(|val| {
-            let id = Id {
-                name: format!("metric.{}", val as u32).as_bytes().to_vec(),
-                mtype: Type::Counter,
-                tags: vec![],
-            };
-            Sample::Parsed(Owned::new(id, 1.0, None))
-        }).collect();
+        let names: Vec<Event> = (0..400)
+            .map(|val| {
+                let id = Id {
+                    name: format!("metric.{}", val as u32).as_bytes().to_vec(),
+                    mtype: Type::Counter,
+                    tags: vec![],
+                };
+                Event::Parsed(Owned::new(id, 1.0, None))
+            })
+            .collect();
 
-        let config = config::processor::Cardinality{
-            size_limit: 100 as usize,
+        let config = config::processor::Cardinality {
+            size_limit: 100_usize,
             rotate_after_seconds: 10,
             buckets: 2,
             route: vec![],
@@ -206,7 +205,11 @@ pub mod test {
             assert!(filter.provide_statsd(name).is_some());
         }
         for name in &names[101..] {
-            assert!(filter.provide_statsd(name).is_none(), "sample {:?} was allowed", name);
+            assert!(
+                filter.provide_statsd(name).is_none(),
+                "sample {:?} was allowed",
+                name
+            );
         }
     }
 }

@@ -1,6 +1,6 @@
 use super::backends::Backends;
 use crate::config;
-use crate::statsd_proto::Sample;
+use crate::statsd_proto::Event;
 use smallvec::SmallVec;
 
 pub mod cardinality;
@@ -8,10 +8,10 @@ pub mod sampler;
 pub mod tag;
 
 pub struct Output<'a> {
-    /// Lists a new sample type returned if the processor has modified the
+    /// Lists of new events returned if the processor has modified the
     /// sample in any way. If this is none but a route is set, downstream
     /// processors will be called with the original reference to the Sample
-    pub new_samples: Option<SmallVec<[Sample; 4]>>,
+    pub new_events: Option<SmallVec<[Event; 4]>>,
     pub route: &'a [config::Route],
 }
 pub trait Processor {
@@ -19,6 +19,6 @@ pub trait Processor {
     /// of the called time is provided for mocking, and a reference to the
     /// Backends structure is provided to re-inject messages into processor
     /// framework if desired.
-    fn tick(&self, _time: std::time::SystemTime, _backends: &Backends) -> () {}
-    fn provide_statsd(&self, sample: &Sample) -> Option<Output>;
+    fn tick(&self, _time: std::time::SystemTime, _backends: &Backends) {}
+    fn provide_statsd(&self, sample: &Event) -> Option<Output>;
 }

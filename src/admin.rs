@@ -45,7 +45,7 @@ async fn request_handler(
 async fn hyper_server(port: u16, collector: Collector) -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("[::]:{}", port).parse().unwrap();
     let admin_state = AdminState {
-        collector: collector,
+        collector,
     };
     let make_svc = make_service_fn(move |_conn| {
         let service_capture = admin_state.clone();

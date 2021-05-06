@@ -4,8 +4,8 @@ use std::convert::TryInto;
 
 fn parse(
     line: &Bytes,
-) -> Result<statsrelay::statsd_proto::PDU, statsrelay::statsd_proto::ParseError> {
-    statsrelay::statsd_proto::PDU::parse(line.clone())
+) -> Result<statsrelay::statsd_proto::Pdu, statsrelay::statsd_proto::ParseError> {
+    statsrelay::statsd_proto::Pdu::parse(line.clone())
 }
 
 fn criterion_benchmark(c: &mut Criterion) {

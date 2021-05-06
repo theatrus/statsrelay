@@ -210,13 +210,13 @@ fn check_routes(config: &Config, routes: &[Route]) -> Result<(), Error> {
                 .statsd
                 .backends
                 .get(route.route_to.as_str())
-                .ok_or(Error::UnknownRoutingDestination(route.clone()))
+                .ok_or_else(|| Error::UnknownRoutingDestination(route.clone()))
                 .map(|_| ()),
             RouteType::Processor => {
                 if let Some(procs) = &config.processors {
                     return procs
                         .get(route.route_to.as_str())
-                        .ok_or(Error::UnknownRoutingDestination(route.clone()))
+                        .ok_or_else(|| Error::UnknownRoutingDestination(route.clone()))
                         .map(|_| ());
                 } else {
                     Err(Error::UnknownRoutingDestination(route.clone()))
@@ -248,7 +248,7 @@ fn check_config_route(config: &Config) -> Result<(), Error> {
 fn check_config_discovery(config: &Config, discovery: &Discovery) -> anyhow::Result<()> {
     for (_, statsd_dupl) in config.statsd.backends.iter() {
         if let Some(source) = &statsd_dupl.shard_map_source {
-            if let None = discovery.sources.get(source) {
+            if discovery.sources.get(source).is_none() {
                 return Err(Error::UnknownDiscoverySource(source.clone()).into());
             }
         }

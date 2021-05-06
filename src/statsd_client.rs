@@ -11,18 +11,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::stats;
-use crate::statsd_proto::PDU as StatsdPDU;
+use crate::statsd_proto::Pdu;
 
 use log::{info, warn};
 
 pub struct StatsdClient {
-    sender: mpsc::Sender<StatsdPDU>,
+    sender: mpsc::Sender<Pdu>,
     inner: Arc<StatsdClientInner>,
 }
 
 struct StatsdClientInner {
     endpoint: String,
-    sender: mpsc::Sender<StatsdPDU>,
+    sender: mpsc::Sender<Pdu>,
     _trig: Trigger,
 }
 
@@ -36,7 +36,7 @@ impl StatsdClient {
     pub fn new(stats: stats::Scope, endpoint: &str, channel_buffer: usize) -> Self {
         // Currently, we need this tripwire to abort connection looping. This can probably be refactored
         let (trig, trip) = Tripwire::new();
-        let (sender, recv) = mpsc::channel::<StatsdPDU>(channel_buffer);
+        let (sender, recv) = mpsc::channel::<Pdu>(channel_buffer);
         let inner = StatsdClientInner {
             endpoint: endpoint.to_string(),
             sender: sender.clone(),
@@ -48,16 +48,16 @@ impl StatsdClient {
         tokio::spawn(client_task(stats, eps, trip, recv, ticker_recv));
         StatsdClient {
             inner: Arc::new(inner),
-            sender: sender,
+            sender,
         }
     }
 
-    pub fn sender(&self) -> mpsc::Sender<StatsdPDU> {
+    pub fn sender(&self) -> mpsc::Sender<Pdu> {
         self.sender.clone()
     }
 
     pub fn endpoint(&self) -> &str {
-        return self.inner.endpoint.as_str();
+        self.inner.endpoint.as_str()
     }
 }
 
@@ -118,7 +118,6 @@ fn trim_to_next_newline(buf: &mut Bytes) {
         None => (),
         Some(pos) => {
             let _b = buf.split_to(pos + 1);
-            ()
         }
     }
 }
@@ -208,13 +207,10 @@ async fn client_sender(
 async fn ticker(endpoint: String, sender: mpsc::Sender<bool>) {
     loop {
         sleep(SEND_DELAY).await;
-        match sender.send(true).await {
-            Err(_) => {
-                info!("ticker task {} exiting", endpoint);
-                return;
-            }
-            Ok(_) => (),
-        };
+        if sender.send(true).await.is_err() {
+            info!("ticker task {} exiting", endpoint);
+            return;
+        }
     }
 }
 
@@ -222,7 +218,7 @@ async fn client_task(
     stats: stats::Scope,
     endpoint: String,
     connect_tripwire: Tripwire,
-    mut recv: mpsc::Receiver<StatsdPDU>,
+    mut recv: mpsc::Receiver<Pdu>,
     mut ticker_recv: mpsc::Receiver<bool>,
 ) {
     let backoff_send = stats.counter("send_backoff").unwrap();
@@ -246,7 +242,7 @@ async fn client_task(
 
         match (pdu, timeout) {
             (Some(pdu), _) => {
-                let pdu_bytes = pdu.as_ref();
+                let pdu_bytes = pdu.as_bytes();
                 if buf.remaining_mut() < pdu_bytes.len() {
                     buf.reserve(pdu_bytes.len() + 10);
                 }
@@ -274,13 +270,10 @@ async fn client_task(
                 // Timeout! Just go ahead and send whats in the buf now
             }
         };
-        match buf_sender.send(buf.freeze()).await {
-            Err(_e) => {
+        if buf_sender.send(buf.freeze()).await.is_err() {
                 info!("client task {} exiting", endpoint);
                 return;
-            }
-            Ok(_) => (),
-        };
+        }
         buf = BytesMut::with_capacity(INITIAL_BUF_CAPACITY);
     }
 }

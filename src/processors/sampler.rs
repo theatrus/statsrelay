@@ -2,7 +2,7 @@ use super::Output;
 use crate::backends::Backends;
 use crate::processors;
 use crate::statsd_proto::Id;
-use crate::statsd_proto::{Owned, Sample, Type};
+use crate::statsd_proto::{Owned, Event, Type};
 use crate::{config, statsd_proto::Parsed};
 
 use ahash::RandomState;
@@ -46,7 +46,7 @@ struct Counter {
 struct Timer {
     values: Vec<f64>,
     filled_count: u32,
-    resevoir_size: u32,
+    reservoir_size: u32,
     count: f64,
     sum: f64,
 }
@@ -56,7 +56,7 @@ impl Timer {
         Timer {
             values: Vec::with_capacity(reservoir_size as usize),
             filled_count: 0,
-            resevoir_size: reservoir_size,
+            reservoir_size,
             count: 0_f64,
             sum: 0_f64,
         }
@@ -64,11 +64,11 @@ impl Timer {
 
     fn add(&mut self, value: f64, sample_rate: Option<f64>) {
         // Do an initial fill if we haven't filled the full reservoir
-        if self.values.len() < self.resevoir_size as usize {
+        if self.values.len() < self.reservoir_size as usize {
             self.values.push(value);
         } else {
             match rand::thread_rng().gen::<u32>() % self.filled_count {
-                idx if idx < self.resevoir_size => self.values[idx as usize] = value,
+                idx if idx < self.reservoir_size => self.values[idx as usize] = value,
                 _ => (),
             }
         }
@@ -180,7 +180,7 @@ impl Sampler {
 }
 
 impl processors::Processor for Sampler {
-    fn provide_statsd(&self, sample: &Sample) -> Option<processors::Output> {
+    fn provide_statsd(&self, sample: &Event) -> Option<processors::Output> {
         let owned: Result<Owned, _> = sample.try_into();
         match owned {
             Err(_) => None,
@@ -198,15 +198,15 @@ impl processors::Processor for Sampler {
             }
             Ok(_) => Some(Output {
                 route: &self.route_to,
-                new_samples: None,
+                new_events: None,
             }),
         }
     }
 
-    fn tick(&self, time: std::time::SystemTime, backends: &Backends) -> () {
+    fn tick(&self, time: std::time::SystemTime, backends: &Backends) {
         // Take a lock on the last flush, which guards all other flushes.
         let flush_lock = self.last_flush.lock();
-        let earlier = flush_lock.borrow().clone();
+        let earlier = *flush_lock.borrow();
         match time.duration_since(earlier) {
             Err(_) => {
                 return;
@@ -219,7 +219,7 @@ impl processors::Processor for Sampler {
 
         let mut gauges = self.gauges.lock().replace(HashMap::default());
         for (id, gauge) in gauges.drain() {
-            let pdu = Sample::Parsed(Owned::new(id.clone(), gauge.value, None));
+            let pdu = Event::Parsed(Owned::new(id.clone(), gauge.value, None));
             backends.provide_statsd(&pdu, self.route_to.as_ref())
         }
 
@@ -227,7 +227,7 @@ impl processors::Processor for Sampler {
         for (id, counter) in counters.drain() {
             let value = counter.value / counter.samples;
             let sample_rate = 1_f64 / counter.samples;
-            let pdu = Sample::Parsed(Owned::new(id.clone(), value, Some(sample_rate)));
+            let pdu = Event::Parsed(Owned::new(id.clone(), value, Some(sample_rate)));
             backends.provide_statsd(&pdu, self.route_to.as_ref());
         }
 
@@ -235,7 +235,7 @@ impl processors::Processor for Sampler {
         for (id, timer) in timers.drain() {
             let sample_rate = timer.values.len() as f64 / timer.count;
             for value in timer.values {
-                let pdu = Sample::Parsed(Owned::new(id.clone(), value, Some(sample_rate)));
+                let pdu = Event::Parsed(Owned::new(id.clone(), value, Some(sample_rate)));
                 backends.provide_statsd(&pdu, self.route_to.as_ref());
             }
         }
@@ -255,8 +255,8 @@ pub mod test {
             timer.add(x as f64, None);
         }
         assert_eq!(timer.filled_count, 200);
-        assert_eq!(timer.count, 200 as f64);
-        assert_eq!(timer.sum, 19900 as f64);
+        assert_eq!(timer.count, 200_f64);
+        assert_eq!(timer.sum, 19900_f64);
         assert_eq!(timer.values.len(), 100);
     }
 }

@@ -24,7 +24,7 @@ trait Transformer {
 }
 
 /// Convert an update into another update based on a format string
-fn transform_format(format: &String, input: &Update) -> Option<Update> {
+fn transform_format(format: &str, input: &Update) -> Option<Update> {
     if !format.contains("{}") {
         return None;
     }
@@ -94,7 +94,7 @@ async fn poll_s3_source(config: S3DiscoverySource) -> anyhow::Result<Update> {
         ..Default::default()
     };
     let resp = s3.get_object(req).await?;
-    let mut buffer = Vec::with_capacity(resp.content_length.unwrap_or(0 as i64) as usize);
+    let mut buffer = Vec::with_capacity(resp.content_length.unwrap_or(0_i64) as usize);
     let mut update = match resp.body {
         Some(contents) => {
             contents.into_async_read().read_to_end(&mut buffer).await?;
@@ -210,8 +210,14 @@ impl Cache {
         self.cache.insert(event.0.clone(), event.1.clone());
     }
 
-    pub fn get(&self, key: &String) -> Option<Update> {
+    pub fn get(&self, key: &str) -> Option<Update> {
         self.cache.get(key).map(|s| s.clone())
+    }
+}
+
+impl Default for Cache {
+    fn default() -> Self {
+        Cache::new()
     }
 }
 

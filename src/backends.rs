@@ -8,10 +8,8 @@ use thiserror::Error;
 use crate::discovery;
 use crate::stats;
 use crate::statsd_backend::StatsdBackend;
-use crate::statsd_proto::Sample;
+use crate::statsd_proto::Event;
 use crate::{config, processors};
-
-use log::info;
 
 #[derive(Error, Debug)]
 pub enum BackendError {
@@ -30,7 +28,7 @@ impl BackendsInner {
         BackendsInner {
             statsd: HashMap::new(),
             processors: HashMap::new(),
-            stats: stats,
+            stats,
         }
     }
 
@@ -45,18 +43,18 @@ impl BackendsInner {
 
     fn replace_statsd_backend(
         &mut self,
-        name: &String,
+        name: &str,
         c: &config::StatsdBackendConfig,
         discovery_update: Option<&discovery::Update>,
     ) -> anyhow::Result<()> {
         let previous = self.statsd.get(name);
         let backend = StatsdBackend::new(
-            self.stats.scope(name.as_str()),
+            self.stats.scope(name),
             c,
             previous,
             discovery_update,
         )?;
-        self.statsd.insert(name.clone(), backend);
+        self.statsd.insert(name.to_owned(), backend);
         Ok(())
     }
 
@@ -64,7 +62,7 @@ impl BackendsInner {
         self.statsd.len()
     }
 
-    fn remove_statsd_backend(&mut self, name: &String) -> anyhow::Result<()> {
+    fn remove_statsd_backend(&mut self, name: &str) -> anyhow::Result<()> {
         self.statsd.remove(name);
         Ok(())
     }
@@ -73,30 +71,31 @@ impl BackendsInner {
         self.statsd.keys().collect()
     }
 
-    fn provide_statsd(&self, pdu: &Sample, route: &[config::Route]) {
+    fn provide_statsd(&self, pdu: &Event, route: &[config::Route]) {
         let _r: Vec<_> = route
             .iter()
             .map(|dest| match dest.route_type {
                 config::RouteType::Statsd => {
-                    self.statsd
-                        .get(dest.route_to.as_str())
-                        .map(|backend| backend.provide_statsd(pdu));
+                    if let Some(backend) = self.statsd.get(dest.route_to.as_str()) {
+                        backend.provide_statsd(pdu)
+                    }
                 }
                 config::RouteType::Processor => {
-                    self.processors
+                    if let Some(chain) = self
+                        .processors
                         .get(dest.route_to.as_str())
                         .map(|proc| proc.provide_statsd(pdu))
                         .flatten()
-                        .map(|chain| {
-                            match chain.new_samples {
-                                None => self.provide_statsd(pdu, chain.route),
-                                Some(sv) => {
-                                    for pdu in sv.as_ref() {
-                                        self.provide_statsd(pdu, chain.route);
-                                    }
+                    {
+                        match chain.new_events {
+                            None => self.provide_statsd(pdu, chain.route),
+                            Some(sv) => {
+                                for pdu in sv.as_ref() {
+                                    self.provide_statsd(pdu, chain.route);
                                 }
                             }
-                        });
+                        }
+                    }
                 }
             })
             .collect();
@@ -137,7 +136,7 @@ impl Backends {
 
     pub fn replace_statsd_backend(
         &self,
-        name: &String,
+        name: &str,
         c: &config::StatsdBackendConfig,
         discovery_update: Option<&discovery::Update>,
     ) -> anyhow::Result<()> {
@@ -146,7 +145,7 @@ impl Backends {
             .replace_statsd_backend(name, c, discovery_update)
     }
 
-    pub fn remove_statsd_backend(&self, name: &String) -> anyhow::Result<()> {
+    pub fn remove_statsd_backend(&self, name: &str) -> anyhow::Result<()> {
         self.inner.write().remove_statsd_backend(name)
     }
 
@@ -163,11 +162,15 @@ impl Backends {
         self.inner.read().len()
     }
 
-    pub fn provide_statsd(&self, pdu: &Sample, route: &[config::Route]) {
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn provide_statsd(&self, pdu: &Event, route: &[config::Route]) {
         self.inner.read().provide_statsd(pdu, route)
     }
 
-    pub fn provide_statsd_slice(&self, pdu: &[Sample], route: &[config::Route]) {
+    pub fn provide_statsd_slice(&self, pdu: &[Event], route: &[config::Route]) {
         let lock = self.inner.read();
         for p in pdu {
             lock.provide_statsd(p, route);
@@ -212,14 +215,14 @@ pub mod test {
 
     struct AssertProc<T>
     where
-        T: Fn(&Sample) -> (),
+        T: Fn(&Event),
     {
         proc: T,
         count: Arc<AtomicU32>,
     }
 
-    impl<T: Fn(&Sample) -> ()> processors::Processor for AssertProc<T> {
-        fn provide_statsd(&self, sample: &Sample) -> Option<processors::Output> {
+    impl<T: Fn(&Event)> processors::Processor for AssertProc<T> {
+        fn provide_statsd(&self, sample: &Event) -> Option<processors::Output> {
             (self.proc)(sample);
             self.count.fetch_add(1, Ordering::Acquire);
             None
@@ -241,7 +244,7 @@ pub mod test {
         (counter, proc)
     }
 
-    fn make_asserting_mock<T: Fn(&Sample) -> () + Send + Sync + 'static>(
+    fn make_asserting_mock<T: Fn(&Event) + Send + Sync + 'static>(
         t: T,
     ) -> (Arc<AtomicU32>, Box<dyn Processor + Send + Sync>) {
         let counter = Arc::new(AtomicU32::new(0));
@@ -284,13 +287,13 @@ pub mod test {
         insert_proc(&backend, "tag", Box::new(tn));
 
         let pdu =
-            statsd_proto::PDU::parse(bytes::Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0"))
+            statsd_proto::Pdu::parse(bytes::Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0"))
                 .unwrap();
         let route = vec![config::Route {
             route_type: config::RouteType::Processor,
             route_to: "tag".to_owned(),
         }];
-        backend.provide_statsd(&Sample::PDU(pdu), &route);
+        backend.provide_statsd(&Event::Pdu(pdu), &route);
 
         // Check how many messages the mock has received
         let actual_count = counter.load(Ordering::Acquire);
@@ -326,13 +329,13 @@ pub mod test {
         insert_proc(&backend, "tag", Box::new(tn));
 
         let pdu =
-            statsd_proto::PDU::parse(bytes::Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0"))
+            statsd_proto::Pdu::parse(bytes::Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0"))
                 .unwrap();
         let route = vec![config::Route {
             route_type: config::RouteType::Processor,
             route_to: "tag".to_owned(),
         }];
-        backend.provide_statsd(&Sample::PDU(pdu), &route);
+        backend.provide_statsd(&Event::Pdu(pdu), &route);
 
         // Check how many messages the mock has received
         let actual_count = counter1.load(Ordering::Acquire);

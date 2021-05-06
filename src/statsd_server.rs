@@ -21,7 +21,7 @@ use crate::backends::Backends;
 use crate::config;
 use crate::config::StatsdServerConfig;
 use crate::stats;
-use crate::statsd_proto::{Sample, PDU};
+use crate::statsd_proto::{Event, Pdu};
 
 const TCP_READ_TIMEOUT: Duration = Duration::from_secs(62);
 const READ_BUFFER: usize = 8192;
@@ -75,9 +75,8 @@ impl UdpServer {
                         processed_lines.inc_by(r.len() as f64);
                         backends.provide_statsd_slice(&r, &route);
 
-                        match PDU::parse(buf.clone().freeze()) {
-                            Ok(p) => backends.provide_statsd(&Sample::PDU(p), &route),
-                            Err(_) => (),
+                        if let Ok(p) = Pdu::parse(buf.clone().freeze()) {
+                            backends.provide_statsd(&Event::Pdu(p), &route);
                         }
                         buf.clear();
                     }
@@ -90,8 +89,8 @@ impl UdpServer {
     }
 }
 
-fn process_buffer_newlines(buf: &mut BytesMut) -> Vec<Sample> {
-    let mut ret: Vec<Sample> = Vec::new();
+fn process_buffer_newlines(buf: &mut BytesMut) -> Vec<Event> {
+    let mut ret: Vec<Event> = Vec::new();
     loop {
         match memchr(b'\n', &buf) {
             None => break,
@@ -107,13 +106,13 @@ fn process_buffer_newlines(buf: &mut BytesMut) -> Vec<Sample> {
                     // Consume a line consisting of just the word status, and do not produce a PDU
                     continue;
                 }
-                if let Ok(pdu) = PDU::parse(frozen) {
-                    ret.push(Sample::PDU(pdu));
+                if let Ok(pdu) = Pdu::parse(frozen) {
+                    ret.push(Event::Pdu(pdu));
                 }
             }
         };
     }
-    return ret;
+    ret
 }
 
 async fn client_handler<T>(
@@ -157,12 +156,8 @@ async fn client_handler<T>(
 
                 backends.provide_statsd_slice(&r, &route);
                 let remaining = buf.clone().freeze();
-                match PDU::parse(remaining) {
-                    Ok(p) => {
-                        backends.provide_statsd(&Sample::PDU(p), &route);
-                        ()
-                    }
-                    Err(_) => (),
+                if let Ok(p) = Pdu::parse(remaining) {
+                        backends.provide_statsd(&Event::Pdu(p), &route);
                 };
                 debug!("remaining {:?}", buf);
                 debug!("closing reader {}", peer);
@@ -303,7 +298,7 @@ pub mod test {
         // Validate we don't consume non-newlines
         b.put_slice(b"hello");
         let r = process_buffer_newlines(&mut b);
-        assert!(r.len() == 0);
+        assert!(r.is_empty());
         assert!(b.split().as_ref() == b"hello");
     }
 
@@ -325,7 +320,7 @@ pub mod test {
         b.put_slice(b"hello:1|c\r\nhello:1|c\nhello2");
         let r = process_buffer_newlines(&mut b);
         for w in r {
-            let pdu: PDU = w.into();
+            let pdu: Pdu = w.into();
             assert!(pdu.pdu_type() == b"c");
             assert!(pdu.name() == b"hello");
             found += 1
@@ -342,7 +337,7 @@ pub mod test {
         b.put_slice(b"status\r\nhello:1|c\nhello2");
         let r = process_buffer_newlines(&mut b);
         for w in r {
-            let pdu: PDU = w.into();
+            let pdu: Pdu = w.into();
             assert!(pdu.pdu_type() == b"c");
             assert!(pdu.name() == b"hello");
             found += 1
