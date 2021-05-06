@@ -2,7 +2,7 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime};
 
 use crate::backends::Backends;
-
+use crate::stats::{Counter, Scope};
 use super::super::config;
 use super::super::statsd_proto::Sample;
 use super::{Output, Processor};
@@ -10,6 +10,8 @@ use super::{Output, Processor};
 use ahash::AHasher;
 use cuckoofilter::{self, CuckooFilter};
 use parking_lot::Mutex;
+
+use log::warn;
 
 struct TimeBoundedCuckoo<H>
 where
@@ -92,15 +94,18 @@ pub struct Cardinality {
     route: Vec<config::Route>,
     filter: Mutex<MultiCuckoo<AHasher>>,
     limit: usize,
+    counter_flagged_metrics: Counter,
 }
 
 impl Cardinality {
-    pub fn new(from_config: &config::processor::Cardinality) -> Self {
+    pub fn new(scope: Scope, from_config: &config::processor::Cardinality) -> Self {
         let window = Duration::from_secs(from_config.rotate_after_seconds);
+        let flagged_metrics = scope.counter("flagged_metrics").unwrap();
         Cardinality {
             route: from_config.route.clone(),
             filter: Mutex::new(MultiCuckoo::new(from_config.buckets, &window)),
             limit: from_config.size_limit as usize,
+            counter_flagged_metrics: flagged_metrics,
         }
     }
 
@@ -114,12 +119,14 @@ impl Processor for Cardinality {
         let mut filter = self.filter.lock();
         let contains = filter.contains(sample);
         if !contains && filter.len() > self.limit {
+            self.counter_flagged_metrics.inc();
+            warn!("metric flagged for cardinality limits: {:?}", sample);
             return None;
         }
         let _ = filter.add(sample);
         Some(Output {
             route: self.route.as_ref(),
-            new_sample: None,
+            new_samples: None,
         })
     }
 
@@ -193,7 +200,8 @@ pub mod test {
             buckets: 2,
             route: vec![],
         };
-        let filter = Cardinality::new(&config);
+        let scope = crate::stats::Collector::default().scope("test");
+        let filter = Cardinality::new(scope, &config);
         for name in &names[0..101] {
             assert!(filter.provide_statsd(name).is_some());
         }

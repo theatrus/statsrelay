@@ -4,6 +4,8 @@ use crate::statsd_proto;
 use crate::statsd_proto::Sample;
 use std::convert::TryInto;
 
+use smallvec::smallvec;
+
 pub struct Normalizer {
     route: Vec<config::Route>,
 }
@@ -23,7 +25,7 @@ impl processors::Processor for Normalizer {
             .map(|inp| {
                 let out = statsd_proto::convert::to_inline_tags(inp);
                 processors::Output {
-                    new_sample: Some(Sample::Parsed(out)),
+                    new_samples: Some(smallvec![Sample::Parsed(out)]),
                     route: self.route.as_ref(),
                 }
             })
@@ -52,7 +54,8 @@ pub mod test {
         let sample = Sample::PDU(pdu);
         let result = tn.provide_statsd(&sample).unwrap();
 
-        let owned: statsd_proto::Owned = result.new_sample.unwrap().try_into().unwrap();
+        let first_sample = &result.new_samples.as_ref().unwrap()[0];
+        let owned: statsd_proto::Owned = first_sample.try_into().unwrap();
         assert_eq!(owned.name(), b"foo.bar.__tags=value");
         assert_eq!(route, result.route);
     }

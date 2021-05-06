@@ -88,10 +88,14 @@ impl BackendsInner {
                         .map(|proc| proc.provide_statsd(pdu))
                         .flatten()
                         .map(|chain| {
-                            self.provide_statsd(
-                                chain.new_sample.as_ref().unwrap_or(pdu),
-                                chain.route.as_ref(),
-                            )
+                            match chain.new_samples {
+                                None => self.provide_statsd(pdu, chain.route),
+                                Some(sv) => {
+                                    for pdu in sv.as_ref() {
+                                        self.provide_statsd(pdu, chain.route);
+                                    }
+                                }
+                            }
                         });
                 }
             })

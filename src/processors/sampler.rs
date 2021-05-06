@@ -1,3 +1,5 @@
+use super::Output;
+use crate::backends::Backends;
 use crate::processors;
 use crate::statsd_proto::Id;
 use crate::statsd_proto::{Owned, Sample, Type};
@@ -5,13 +7,28 @@ use crate::{config, statsd_proto::Parsed};
 
 use ahash::RandomState;
 use parking_lot::Mutex;
+use rand::Rng;
 use std::cell::RefCell;
 use thiserror::Error;
 
 use std::collections::HashMap;
 use std::convert::TryInto;
 
-use super::Output;
+const DEFAULT_RESERVOIR: u32 = 100;
+
+fn scale(value: f64, sample_rate: Option<f64>) -> (f64, f64) {
+    match sample_rate {
+        None => (value, 1_f64),
+        Some(rate) => {
+            let scale = 1_f64 / rate;
+            if scale > 0_f64 && scale <= 1_f64 {
+                (value * scale, scale)
+            } else {
+                (value, 1_f64)
+            }
+        }
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -28,7 +45,40 @@ struct Counter {
 #[derive(Debug)]
 struct Timer {
     values: Vec<f64>,
-    filled_count: usize,
+    filled_count: u32,
+    resevoir_size: u32,
+    count: f64,
+    sum: f64,
+}
+
+impl Timer {
+    fn new(reservoir_size: u32) -> Self {
+        Timer {
+            values: Vec::with_capacity(reservoir_size as usize),
+            filled_count: 0,
+            resevoir_size: reservoir_size,
+            count: 0_f64,
+            sum: 0_f64,
+        }
+    }
+
+    fn add(&mut self, value: f64, sample_rate: Option<f64>) {
+        // Do an initial fill if we haven't filled the full reservoir
+        if self.values.len() < self.resevoir_size as usize {
+            self.values.push(value);
+        } else {
+            match rand::thread_rng().gen::<u32>() % self.filled_count {
+                idx if idx < self.resevoir_size => self.values[idx as usize] = value,
+                _ => (),
+            }
+        }
+        let (sum, count) = scale(value, sample_rate);
+        // Keep track of a sample rate scaled count independently from the
+        // reservoir sample fill
+        self.count += count;
+        self.sum += sum;
+        self.filled_count += 1;
+    }
 }
 
 #[derive(Debug, Default)]
@@ -42,6 +92,8 @@ pub struct Sampler {
     counters: Mutex<RefCell<HashMap<Id, Counter, RandomState>>>,
     timers: Mutex<RefCell<HashMap<Id, Timer, RandomState>>>,
     gauges: Mutex<RefCell<HashMap<Id, Gauge, RandomState>>>,
+
+    last_flush: Mutex<RefCell<std::time::SystemTime>>,
 
     route_to: Vec<config::Route>,
 }
@@ -57,7 +109,73 @@ impl Sampler {
             timers: Mutex::new(timers),
             gauges: Mutex::new(gauges),
             route_to: config.route.clone(),
+            last_flush: Mutex::new(RefCell::new(std::time::SystemTime::now())),
         })
+    }
+
+    fn record_timer(&self, owned: &Owned) {
+        let lock = self.timers.lock();
+        let mut hm = lock.borrow_mut();
+
+        match hm.get_mut(owned.id()) {
+            Some(v) => {
+                v.add(owned.value(), owned.sample_rate());
+            }
+            None => {
+                let mut timer = Timer::new(
+                    self.config
+                        .timer_reservoir_size
+                        .unwrap_or(DEFAULT_RESERVOIR),
+                );
+                timer.add(owned.value(), owned.sample_rate());
+                hm.insert(owned.id().clone(), timer);
+            }
+        }
+    }
+
+    fn record_gauge(&self, owned: &Owned) {
+        let lock = self.gauges.lock();
+        let mut hm = lock.borrow_mut();
+        // Note: Using the entry API would make logical sense to avoid
+        // re-hashing the same Id on insert, however it costs more to
+        // clone the Id as the entry API does not allow for trait Clone
+        // key references and supporting lazy-cloning.
+        match hm.get_mut(owned.id()) {
+            Some(v) => v.value = owned.value(),
+            None => {
+                hm.insert(
+                    owned.id().clone(),
+                    Gauge {
+                        value: owned.value(),
+                    },
+                );
+            }
+        };
+    }
+
+    fn record_counter(&self, owned: &Owned) {
+        // Adjust values based on sample rate. In the end, emission will
+        // re-scale everything back to the sample rate.
+        let (scaled, counts) = scale(owned.value(), owned.sample_rate());
+
+        let lock = self.counters.lock();
+        let mut hm = lock.borrow_mut();
+
+        match hm.get_mut(owned.id()) {
+            Some(v) => {
+                v.value += scaled;
+                v.samples += counts;
+            }
+            None => {
+                hm.insert(
+                    owned.id().clone(),
+                    Counter {
+                        value: scaled,
+                        samples: counts,
+                    },
+                );
+            }
+        }
     }
 }
 
@@ -66,36 +184,79 @@ impl processors::Processor for Sampler {
         let owned: Result<Owned, _> = sample.try_into();
         match owned {
             Err(_) => None,
-            Ok(owned) if owned.metric_type() == &Type::Timer => unimplemented!(),
+            Ok(owned) if owned.metric_type() == &Type::Timer => {
+                self.record_timer(&owned);
+                None
+            }
             Ok(owned) if owned.metric_type() == &Type::Counter => {
-                //let lock = self.counters.lock();
-                //let mut hm = lock.borrow_mut();
-                unimplemented!();
+                self.record_counter(&owned);
+                None
             }
             Ok(owned) if owned.metric_type() == &Type::Gauge => {
-                let lock = self.gauges.lock();
-                let mut hm = lock.borrow_mut();
-                // Note: Using the entry API would make logical sense to avoid
-                // re-hashing the same Id on insert, however it costs more to
-                // clone the Id as the entry API does not allow for trait Clone
-                // key references and supporting lazy-cloning.
-                match hm.get_mut(owned.id()) {
-                    Some(v) => v.value = owned.value(),
-                    None => {
-                        hm.insert(
-                            owned.id().clone(),
-                            Gauge {
-                                value: owned.value(),
-                            },
-                        );
-                    }
-                };
+                self.record_gauge(&owned);
                 None
             }
             Ok(_) => Some(Output {
                 route: &self.route_to,
-                new_sample: None,
+                new_samples: None,
             }),
         }
+    }
+
+    fn tick(&self, time: std::time::SystemTime, backends: &Backends) -> () {
+        // Take a lock on the last flush, which guards all other flushes.
+        let flush_lock = self.last_flush.lock();
+        let earlier = flush_lock.borrow().clone();
+        match time.duration_since(earlier) {
+            Err(_) => {
+                return;
+            }
+            Ok(duration) if duration.as_secs() < self.config.window as u64 => {
+                return;
+            }
+            Ok(_) => (),
+        }
+
+        let mut gauges = self.gauges.lock().replace(HashMap::default());
+        for (id, gauge) in gauges.drain() {
+            let pdu = Sample::Parsed(Owned::new(id.clone(), gauge.value, None));
+            backends.provide_statsd(&pdu, self.route_to.as_ref())
+        }
+
+        let mut counters = self.counters.lock().replace(HashMap::default());
+        for (id, counter) in counters.drain() {
+            let value = counter.value / counter.samples;
+            let sample_rate = 1_f64 / counter.samples;
+            let pdu = Sample::Parsed(Owned::new(id.clone(), value, Some(sample_rate)));
+            backends.provide_statsd(&pdu, self.route_to.as_ref());
+        }
+
+        let mut timers = self.timers.lock().replace(HashMap::default());
+        for (id, timer) in timers.drain() {
+            let sample_rate = timer.values.len() as f64 / timer.count;
+            for value in timer.values {
+                let pdu = Sample::Parsed(Owned::new(id.clone(), value, Some(sample_rate)));
+                backends.provide_statsd(&pdu, self.route_to.as_ref());
+            }
+        }
+
+        flush_lock.replace(time);
+    }
+}
+
+#[cfg(test)]
+pub mod test {
+    use super::*;
+
+    #[test]
+    fn fill_timer() {
+        let mut timer = Timer::new(100);
+        for x in 0..200 {
+            timer.add(x as f64, None);
+        }
+        assert_eq!(timer.filled_count, 200);
+        assert_eq!(timer.count, 200 as f64);
+        assert_eq!(timer.sum, 19900 as f64);
+        assert_eq!(timer.values.len(), 100);
     }
 }

@@ -19,13 +19,13 @@ use tokio::signal::unix::{signal, SignalKind};
 use env_logger::Env;
 use log::{debug, error, info};
 
-use statsrelay::backends;
 use statsrelay::config;
 use statsrelay::discovery;
 use statsrelay::processors;
 use statsrelay::stats;
 use statsrelay::statsd_server;
 use statsrelay::{admin, config::Config};
+use statsrelay::{backends, stats::Scope};
 
 #[derive(StructOpt, Debug)]
 struct Options {
@@ -48,7 +48,9 @@ async fn server(scope: stats::Scope, config: Config, opts: Options) {
 
     // Load processors
     if let Some(processors) = config.processors.as_ref() {
-        load_processors(&backends, processors).await.unwrap();
+        load_processors(scope.scope("processors"), &backends, processors)
+            .await
+            .unwrap();
     }
 
     let (sender, tripwire) = Tripwire::new();
@@ -179,6 +181,7 @@ fn main() -> anyhow::Result<()> {
 /// Load processors from a given config structure and pack them into the given
 /// backend set. Currently processors can't be reloaded at runtime.
 async fn load_processors(
+    scope: Scope,
     backends: &backends::Backends,
     processors: &HashMap<String, config::Processor>,
 ) -> anyhow::Result<()> {
@@ -194,7 +197,10 @@ async fn load_processors(
             }
             config::Processor::Cardinality(cardinality) => {
                 info!("processor cardinality: {:?}", cardinality);
-                Box::new(processors::cardinality::Cardinality::new(cardinality))
+                Box::new(processors::cardinality::Cardinality::new(
+                    scope.scope(name),
+                    cardinality,
+                ))
             }
         };
         backends.replace_processor(name.as_str(), proc)?;

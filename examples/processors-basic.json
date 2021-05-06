@@ -8,9 +8,15 @@
             "type": "tag_converter",
             "route": ["processor:cardinality"]
         },
+        "sampler": {
+            "type": "sampler",
+            "window": 5,
+            "timer_reservoir_size": 2,
+            "route": ["statsd:simple"]
+        },
         "cardinality": {
             "type": "cardinality",
-            "route": ["statsd:simple"],
+            "route": ["processor:sampler"],
             "size_limit": 100,
             "rotate_after_seconds": 10,
             "buckets": 3

@@ -1,6 +1,7 @@
 use super::backends::Backends;
 use crate::config;
 use crate::statsd_proto::Sample;
+use smallvec::SmallVec;
 
 pub mod cardinality;
 pub mod sampler;
@@ -10,7 +11,7 @@ pub struct Output<'a> {
     /// Lists a new sample type returned if the processor has modified the
     /// sample in any way. If this is none but a route is set, downstream
     /// processors will be called with the original reference to the Sample
-    pub new_sample: Option<Sample>,
+    pub new_samples: Option<SmallVec<[Sample; 4]>>,
     pub route: &'a [config::Route],
 }
 pub trait Processor {
