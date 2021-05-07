@@ -36,7 +36,7 @@ use rand::{Rng, SeedableRng};
 use serde_derive::{Deserialize, Serialize};
 
 /// If insertion fails, we will retry this many times.
-pub const MAX_REBUCKET: u32 = 500;
+pub const MAX_REBUCKET: u32 = 10;
 
 /// The default number of buckets.
 pub const DEFAULT_CAPACITY: usize = (1 << 20) - 1;

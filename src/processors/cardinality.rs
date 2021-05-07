@@ -27,7 +27,7 @@ where
 {
     fn new(valid_until: SystemTime) -> Self {
         TimeBoundedCuckoo {
-            filter: CuckooFilter::with_capacity((1 << 24) - 1),
+            filter: CuckooFilter::with_capacity((1 << 21) - 1),
             valid_until,
         }
     }
