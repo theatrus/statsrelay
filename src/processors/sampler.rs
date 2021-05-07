@@ -7,7 +7,6 @@ use crate::{config, statsd_proto::Parsed};
 
 use ahash::RandomState;
 use parking_lot::Mutex;
-use rand::Rng;
 use std::cell::RefCell;
 use thiserror::Error;
 
@@ -75,7 +74,7 @@ impl Timer {
         if self.values.len() < self.reservoir_size as usize {
             self.values.push(value);
         } else {
-            match rand::thread_rng().gen::<u32>() % self.filled_count {
+            match fastrand::u32(..) % self.filled_count {
                 idx if idx < self.reservoir_size => self.values[idx as usize] = value,
                 _ => (),
             }
