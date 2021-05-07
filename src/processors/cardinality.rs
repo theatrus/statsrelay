@@ -7,8 +7,8 @@ use super::{Output, Processor};
 use crate::backends::Backends;
 use crate::stats::{Counter, Scope};
 
+use crate::cuckoofilter::{self, CuckooFilter};
 use ahash::AHasher;
-use cuckoofilter::{self, CuckooFilter};
 use parking_lot::Mutex;
 
 use log::warn;
@@ -27,7 +27,7 @@ where
 {
     fn new(valid_until: SystemTime) -> Self {
         TimeBoundedCuckoo {
-            filter: CuckooFilter::with_capacity(cuckoofilter::DEFAULT_CAPACITY),
+            filter: CuckooFilter::with_capacity((1 << 24) - 1),
             valid_until,
         }
     }
@@ -77,7 +77,11 @@ where
     }
 
     fn rotate(&mut self, with_time: SystemTime) {
-        if self.filters[0].valid_until.duration_since(with_time).is_err() {
+        if self.filters[0]
+            .valid_until
+            .duration_since(with_time)
+            .is_err()
+        {
             // duration_since returns err if the given is later then the valid_until time, aka expired
             self.filters.remove(0);
             self.filters.push(TimeBoundedCuckoo::new(
@@ -116,8 +120,10 @@ impl Processor for Cardinality {
         let mut filter = self.filter.lock();
         let contains = filter.contains(sample);
         if !contains && filter.len() > self.limit {
+            if (self.counter_flagged_metrics.get() as u64) % 1000 == 0 {
+                warn!("metric flagged for cardinality limits: {:?}", sample);
+            }
             self.counter_flagged_metrics.inc();
-            warn!("metric flagged for cardinality limits: {:?}", sample);
             return None;
         }
         let _ = filter.add(sample);

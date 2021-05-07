@@ -2,7 +2,7 @@ use super::Output;
 use crate::backends::Backends;
 use crate::processors;
 use crate::statsd_proto::Id;
-use crate::statsd_proto::{Owned, Event, Type};
+use crate::statsd_proto::{Event, Owned, Type};
 use crate::{config, statsd_proto::Parsed};
 
 use ahash::RandomState;

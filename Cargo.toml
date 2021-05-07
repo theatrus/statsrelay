@@ -53,10 +53,11 @@ prometheus = "0.11"
 jemallocator = "0.3.0"
 
 # Samplers
-cuckoofilter = "0"
+byteorder = "1"
 hyperloglog = "1"
 ahash = "0.7"
 fastrand = "1"
+rand = { version = "0.8", features = ["small_rng"] }
 
 [[bench]]
 name = "statsd_benchmark"

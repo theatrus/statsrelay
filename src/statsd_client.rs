@@ -271,8 +271,8 @@ async fn client_task(
             }
         };
         if buf_sender.send(buf.freeze()).await.is_err() {
-                info!("client task {} exiting", endpoint);
-                return;
+            info!("client task {} exiting", endpoint);
+            return;
         }
         buf = BytesMut::with_capacity(INITIAL_BUF_CAPACITY);
     }

@@ -159,7 +159,7 @@ async fn client_handler<T>(
                 backends.provide_statsd_slice(&r, &route);
                 let remaining = buf.clone().freeze();
                 if let Ok(p) = Pdu::parse(remaining) {
-                        backends.provide_statsd(&Event::Pdu(p), &route);
+                    backends.provide_statsd(&Event::Pdu(p), &route);
                 };
                 debug!("remaining {:?}", buf);
                 debug!("closing reader {}", peer);

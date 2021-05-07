@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod backends;
 pub mod config;
+pub mod cuckoofilter;
 pub mod discovery;
 pub mod processors;
 pub mod shard;

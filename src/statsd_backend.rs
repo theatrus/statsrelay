@@ -54,7 +54,9 @@ impl StatsdBackend {
             .map(|u| u.sources())
             .unwrap_or(&conf.shard_map);
         for endpoint in use_endpoints {
-            if endpoint.is_empty() { continue; }
+            if endpoint.is_empty() {
+                continue;
+            }
             if let Some(client) = memoize.get(endpoint) {
                 ring.push(client.clone())
             } else {
