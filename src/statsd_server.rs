@@ -72,7 +72,6 @@ impl UdpServer {
                 match socket.recv_from(buf.as_mut()) {
                     Ok((size, _remote)) => {
                         buf.truncate(size);
-                        info!("recv {} buf {:?}", size, buf);
                         incoming_bytes.inc_by(size as f64);
                         let r = process_buffer_newlines(&mut buf);
                         processed_lines.inc_by(r.len() as f64);
