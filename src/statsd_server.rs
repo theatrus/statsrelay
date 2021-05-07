@@ -62,14 +62,17 @@ impl UdpServer {
         info!("statsd udp server running on {}", bind);
         let gate = self.shutdown_gate.clone();
         std::thread::spawn(move || {
+            info!("started udp reader thread");
             loop {
                 if gate.load(Relaxed) {
                     break;
                 }
                 let mut buf = BytesMut::with_capacity(65535);
-
-                match socket.recv_from(&mut buf[..]) {
+                buf.resize(65535, 0_u8);
+                match socket.recv_from(buf.as_mut()) {
                     Ok((size, _remote)) => {
+                        buf.truncate(size);
+                        info!("recv {} buf {:?}", size, buf);
                         incoming_bytes.inc_by(size as f64);
                         let r = process_buffer_newlines(&mut buf);
                         processed_lines.inc_by(r.len() as f64);
