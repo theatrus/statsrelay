@@ -127,12 +127,12 @@ async fn client_handler<T>(
 ) where
     T: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut buf = BytesMut::with_capacity(READ_BUFFER);
     let incoming_bytes = stats.counter("incoming_bytes").unwrap();
     let disconnects = stats.counter("disconnects").unwrap();
     let processed_lines = stats.counter("lines").unwrap();
 
     let read_buffer = config.read_buffer.unwrap_or(READ_BUFFER);
+    let mut buf = BytesMut::with_capacity(read_buffer);
 
     loop {
         if buf.remaining_mut() < read_buffer {
