@@ -63,11 +63,11 @@ impl UdpServer {
         let gate = self.shutdown_gate.clone();
         std::thread::spawn(move || {
             info!("started udp reader thread");
+            let mut buf = BytesMut::with_capacity(65535);
             loop {
                 if gate.load(Relaxed) {
                     break;
                 }
-                let mut buf = BytesMut::with_capacity(65535);
                 buf.resize(65535, 0_u8);
                 match socket.recv_from(buf.as_mut()) {
                     Ok((size, _remote)) => {
@@ -80,7 +80,6 @@ impl UdpServer {
                         if let Ok(p) = Pdu::parse(buf.clone().freeze()) {
                             backends.provide_statsd(&Event::Pdu(p), &route);
                         }
-                        buf.clear();
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => (),
                     Err(e) => warn!("udp receiver error {:?}", e),
@@ -124,6 +123,7 @@ async fn client_handler<T>(
     mut socket: T,
     backends: Backends,
     route: Vec<config::Route>,
+    config: config::StatsdServerConfig,
 ) where
     T: AsyncRead + AsyncWrite + Unpin,
 {
@@ -132,9 +132,11 @@ async fn client_handler<T>(
     let disconnects = stats.counter("disconnects").unwrap();
     let processed_lines = stats.counter("lines").unwrap();
 
+    let read_buffer = config.read_buffer.unwrap_or(READ_BUFFER);
+
     loop {
-        if buf.remaining_mut() < READ_BUFFER {
-            buf.reserve(READ_BUFFER);
+        if buf.remaining_mut() < read_buffer {
+            buf.reserve(read_buffer);
         }
         let result = select! {
             r = timeout(TCP_READ_TIMEOUT, socket.read_buf(&mut buf)) => {
@@ -238,6 +240,7 @@ pub async fn run(
     let accept_failures_unix = stats.counter("accept_failures_unix").unwrap();
 
     let routes = config.route.clone();
+    let server_config = config.clone();
     async move {
         loop {
             select! {
@@ -252,7 +255,7 @@ pub async fn run(
                             let peer_addr = format!("{:?}", socket.peer_addr());
                             debug!("accepted unix connection from {:?}", socket.peer_addr());
                             accept_connections_unix.inc();
-                            tokio::spawn(client_handler(stats.scope("connections_unix"), peer_addr, tripwire.clone(), socket, backends.clone(), routes.clone()));
+                            tokio::spawn(client_handler(stats.scope("connections_unix"), peer_addr, tripwire.clone(), socket, backends.clone(), routes.clone(), server_config.clone()));
                         }
                         Err(err) => {
                             accept_failures_unix.inc();
@@ -267,7 +270,7 @@ pub async fn run(
                             let peer_addr = format!("{:?}", socket.peer_addr());
                             debug!("accepted connection from {:?}", socket.peer_addr());
                             accept_connections.inc();
-                            tokio::spawn(client_handler(stats.scope("connections"), peer_addr, tripwire.clone(), socket, backends.clone(), routes.clone()));
+                            tokio::spawn(client_handler(stats.scope("connections"), peer_addr, tripwire.clone(), socket, backends.clone(), routes.clone(), server_config.clone()));
                         }
                         Err(err) => {
                             accept_failures.inc();

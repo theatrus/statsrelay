@@ -126,6 +126,7 @@ pub struct StatsdBackendConfig {
 pub struct StatsdServerConfig {
     pub bind: String,
     pub socket: Option<String>,
+    pub read_buffer: Option<usize>,
     pub route: Vec<Route>,
 }
 
@@ -288,7 +289,8 @@ pub mod test {
                     "default":
                         {
                             "bind": "127.0.0.1:BIND_STATSD_PORT",
-                            "route": ["statsd:test1"]
+                            "route": ["statsd:test1"],
+                            "read_buffer": 65535
                         }
                 },
                 "backends": {
