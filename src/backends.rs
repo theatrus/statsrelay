@@ -48,12 +48,7 @@ impl BackendsInner {
         discovery_update: Option<&discovery::Update>,
     ) -> anyhow::Result<()> {
         let previous = self.statsd.get(name);
-        let backend = StatsdBackend::new(
-            self.stats.scope(name),
-            c,
-            previous,
-            discovery_update,
-        )?;
+        let backend = StatsdBackend::new(self.stats.scope(name), c, previous, discovery_update)?;
         self.statsd.insert(name.to_owned(), backend);
         Ok(())
     }
@@ -72,9 +67,8 @@ impl BackendsInner {
     }
 
     fn provide_statsd(&self, pdu: &Event, route: &[config::Route]) {
-        let _r: Vec<_> = route
-            .iter()
-            .map(|dest| match dest.route_type {
+        for dest in route {
+            match dest.route_type {
                 config::RouteType::Statsd => {
                     if let Some(backend) = self.statsd.get(dest.route_to.as_str()) {
                         backend.provide_statsd(pdu)
@@ -97,8 +91,8 @@ impl BackendsInner {
                         }
                     }
                 }
-            })
-            .collect();
+            }
+        }
     }
 
     /// Provide a periodic "tick" function to drive processors background
