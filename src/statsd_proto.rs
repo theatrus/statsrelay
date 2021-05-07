@@ -297,8 +297,8 @@ impl TryFrom<&Pdu> for Owned {
 
     fn try_from(pdu: &Pdu) -> Result<Self, Self::Error> {
         let value = match lexical::parse::<f64, _>(pdu.value()) {
-            Ok(v) => v,
-            Err(_) => return Err(ParseError::InvalidValue),
+            Ok(v) if v.is_finite()=> v,
+            _ => return Err(ParseError::InvalidValue),
         };
         let sample_rate = pdu
             .sample_rate()
