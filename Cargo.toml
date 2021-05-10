@@ -37,6 +37,7 @@ chrono = "0.4"
 dashmap = "4"
 async-stream = "0.3"
 lexical = "5"
+smallvec = "1"
 
 # For discovery
 rusoto_core = "0.46"
@@ -50,6 +51,13 @@ prometheus = "0.11"
 
 # malloc
 jemallocator = "0.3.0"
+
+# Samplers
+byteorder = "1"
+hyperloglog = "1"
+ahash = "0.7"
+fastrand = "1"
+rand = { version = "0.8", features = ["small_rng"] }
 
 [[bench]]
 name = "statsd_benchmark"

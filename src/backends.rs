@@ -1,196 +1,15 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use regex::bytes::RegexSet;
+use stream_cancel::Tripwire;
 use thiserror::Error;
 
-use crate::config;
 use crate::discovery;
-use crate::shard::{statsrelay_compat_hash, Ring};
 use crate::stats;
-use crate::statsd_client::StatsdClient;
-use crate::statsd_proto;
-
-use log::warn;
-
-/// An either type representing one of the two forms of statsd protocols
-///
-/// In order to allow backends to operate on different levels of protocol
-/// decoding (fully decoded or just tokenized), backends take a Sample enum
-/// which represent either of the two formats, with easy conversions between
-/// them.
-///
-/// # Examples
-/// ```
-/// use statsrelay::statsd_proto;
-/// use bytes::Bytes;
-/// use statsrelay::backends::StatsdSample;
-///
-/// let input = Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0");
-/// let sample = &StatsdSample::PDU(statsd_proto::PDU::parse(input).unwrap());
-/// let parsed: statsd_proto::PDU = sample.into();
-/// ```
-#[derive(Clone, Debug)]
-pub enum StatsdSample {
-    PDU(statsd_proto::PDU),
-    Parsed(statsd_proto::Owned),
-}
-
-impl From<StatsdSample> for statsd_proto::PDU {
-    fn from(inp: StatsdSample) -> Self {
-        match inp {
-            StatsdSample::PDU(pdu) => pdu,
-            StatsdSample::Parsed(p) => p.into(),
-        }
-    }
-}
-
-impl From<&StatsdSample> for statsd_proto::PDU {
-    fn from(inp: &StatsdSample) -> Self {
-        match inp {
-            StatsdSample::PDU(pdu) => pdu.clone(),
-            StatsdSample::Parsed(p) => p.into(),
-        }
-    }
-}
-
-struct StatsdBackend {
-    conf: config::StatsdBackendConfig,
-    ring: Ring<StatsdClient>,
-    input_filter: Option<RegexSet>,
-    warning_log: AtomicU64,
-    backend_sends: stats::Counter,
-    backend_fails: stats::Counter,
-}
-
-impl StatsdBackend {
-    fn new(
-        stats: stats::Scope,
-        conf: &config::StatsdBackendConfig,
-        client_ref: Option<&StatsdBackend>,
-        discovery_update: Option<&discovery::Update>,
-    ) -> anyhow::Result<Self> {
-        let mut filters: Vec<String> = Vec::new();
-
-        // This is ugly, sorry
-        if conf.input_blocklist.is_some() {
-            filters.push(conf.input_blocklist.as_ref().unwrap().clone());
-        }
-        if conf.input_filter.is_some() {
-            filters.push(conf.input_filter.as_ref().unwrap().clone());
-        }
-        let input_filter = if filters.len() > 0 {
-            Some(RegexSet::new(filters).unwrap())
-        } else {
-            None
-        };
-
-        let mut ring: Ring<StatsdClient> = Ring::new();
-
-        // Use the same backend for the same endpoint address, caching the lookup locally
-        let mut memoize: HashMap<String, StatsdClient> =
-            client_ref.map_or_else(|| HashMap::new(), |b| b.clients());
-
-        let use_endpoints = discovery_update
-            .map(|u| u.sources())
-            .unwrap_or(&conf.shard_map);
-        for endpoint in use_endpoints {
-            if let Some(client) = memoize.get(endpoint) {
-                ring.push(client.clone())
-            } else {
-                let client = StatsdClient::new(
-                    stats.scope("statsd_client"),
-                    endpoint.as_str(),
-                    conf.max_queue.unwrap_or(100000) as usize,
-                );
-                memoize.insert(endpoint.clone(), client.clone());
-                ring.push(client);
-            }
-        }
-
-        let backend = StatsdBackend {
-            conf: conf.clone(),
-            ring: ring,
-            input_filter: input_filter,
-            warning_log: AtomicU64::new(0),
-            backend_fails: stats.counter("backend_fails").unwrap(),
-            backend_sends: stats.counter("backend_sends").unwrap(),
-        };
-
-        Ok(backend)
-    }
-
-    // Capture the old ring contents into a memoization map by endpoint,
-    // letting us re-use any old client connections and buffers. Note we
-    // won't start tearing down connections until the memoization buffer and
-    // old ring are both dropped.
-    fn clients(&self) -> HashMap<String, StatsdClient> {
-        let mut memoize: HashMap<String, StatsdClient> = HashMap::new();
-        for i in 0..self.ring.len() {
-            let client = self.ring.pick_from(i as u32);
-            memoize.insert(String::from(client.endpoint()), client.clone());
-        }
-        memoize
-    }
-
-    fn provide_statsd(&self, input: &StatsdSample) {
-        let pdu: statsd_proto::PDU = input.into();
-        if !self
-            .input_filter
-            .as_ref()
-            .map_or(true, |inf| inf.is_match(pdu.name()))
-        {
-            return;
-        }
-
-        let ring_read = &self.ring;
-        let code = match ring_read.len() {
-            0 => return, // In case of nothing to send, do nothing
-            1 => 1 as u32,
-            _ => statsrelay_compat_hash(&pdu),
-        };
-        let client = ring_read.pick_from(code);
-        let sender = client.sender();
-
-        // Assign prefix and/or suffix
-        let pdu_clone = if self.conf.prefix.is_some() || self.conf.suffix.is_some() {
-            pdu.with_prefix_suffix(
-                self.conf
-                    .prefix
-                    .as_ref()
-                    .map(|p| p.as_bytes())
-                    .unwrap_or_default(),
-                self.conf
-                    .suffix
-                    .as_ref()
-                    .map(|s| s.as_bytes())
-                    .unwrap_or_default(),
-            )
-        } else {
-            pdu
-        };
-        match sender.try_send(pdu_clone) {
-            Err(_e) => {
-                self.backend_fails.inc();
-                let count = self
-                    .warning_log
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if count % 1000 == 0 {
-                    warn!(
-                        "error pushing to queue full (endpoint {}, total failures {})",
-                        client.endpoint(),
-                        count
-                    );
-                }
-            }
-            Ok(_) => {
-                self.backend_sends.inc();
-            }
-        }
-    }
-}
+use crate::statsd_backend::StatsdBackend;
+use crate::statsd_proto::Event;
+use crate::{config, processors};
 
 #[derive(Error, Debug)]
 pub enum BackendError {
@@ -200,6 +19,7 @@ pub enum BackendError {
 
 struct BackendsInner {
     statsd: HashMap<String, StatsdBackend>,
+    processors: HashMap<String, Box<dyn processors::Processor + Send + Sync>>,
     stats: stats::Scope,
 }
 
@@ -207,24 +27,29 @@ impl BackendsInner {
     fn new(stats: stats::Scope) -> Self {
         BackendsInner {
             statsd: HashMap::new(),
-            stats: stats,
+            processors: HashMap::new(),
+            stats,
         }
+    }
+
+    fn replace_processor(
+        &mut self,
+        name: &str,
+        processor: Box<dyn processors::Processor + Send + Sync>,
+    ) -> anyhow::Result<()> {
+        self.processors.insert(name.to_owned(), processor);
+        Ok(())
     }
 
     fn replace_statsd_backend(
         &mut self,
-        name: &String,
+        name: &str,
         c: &config::StatsdBackendConfig,
         discovery_update: Option<&discovery::Update>,
     ) -> anyhow::Result<()> {
         let previous = self.statsd.get(name);
-        let backend = StatsdBackend::new(
-            self.stats.scope(name.as_str()),
-            c,
-            previous,
-            discovery_update,
-        )?;
-        self.statsd.insert(name.clone(), backend);
+        let backend = StatsdBackend::new(self.stats.scope(name), c, previous, discovery_update)?;
+        self.statsd.insert(name.to_owned(), backend);
         Ok(())
     }
 
@@ -232,7 +57,7 @@ impl BackendsInner {
         self.statsd.len()
     }
 
-    fn remove_statsd_backend(&mut self, name: &String) -> anyhow::Result<()> {
+    fn remove_statsd_backend(&mut self, name: &str) -> anyhow::Result<()> {
         self.statsd.remove(name);
         Ok(())
     }
@@ -241,14 +66,41 @@ impl BackendsInner {
         self.statsd.keys().collect()
     }
 
-    fn provide_statsd(&self, pdu: &StatsdSample, route: &[config::Route]) {
-        let _r = route.iter().map(|dest| match dest.route_type {
-            config::RouteType::Statsd => self
-                .statsd
-                .get(dest.route_to.as_str())
-                .map(|backend| backend.provide_statsd(pdu)),
-            config::RouteType::Processor => unimplemented!(),
-        });
+    fn provide_statsd(&self, pdu: &Event, route: &[config::Route]) {
+        for dest in route {
+            match dest.route_type {
+                config::RouteType::Statsd => {
+                    if let Some(backend) = self.statsd.get(dest.route_to.as_str()) {
+                        backend.provide_statsd(pdu)
+                    }
+                }
+                config::RouteType::Processor => {
+                    if let Some(chain) = self
+                        .processors
+                        .get(dest.route_to.as_str())
+                        .map(|proc| proc.provide_statsd(pdu))
+                        .flatten()
+                    {
+                        match chain.new_events {
+                            None => self.provide_statsd(pdu, chain.route),
+                            Some(sv) => {
+                                for pdu in sv.as_ref() {
+                                    self.provide_statsd(pdu, chain.route);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Provide a periodic "tick" function to drive processors background
+    /// housekeeping tasks asynchronously.
+    fn processor_tick(&self, now: std::time::SystemTime, backends: &Backends) {
+        for (_, proc) in self.processors.iter() {
+            proc.tick(now, backends);
+        }
     }
 }
 
@@ -268,9 +120,17 @@ impl Backends {
         }
     }
 
+    pub fn replace_processor(
+        &self,
+        name: &str,
+        processor: Box<dyn processors::Processor + Send + Sync>,
+    ) -> anyhow::Result<()> {
+        self.inner.write().replace_processor(name, processor)
+    }
+
     pub fn replace_statsd_backend(
         &self,
-        name: &String,
+        name: &str,
         c: &config::StatsdBackendConfig,
         discovery_update: Option<&discovery::Update>,
     ) -> anyhow::Result<()> {
@@ -279,7 +139,7 @@ impl Backends {
             .replace_statsd_backend(name, c, discovery_update)
     }
 
-    pub fn remove_statsd_backend(&self, name: &String) -> anyhow::Result<()> {
+    pub fn remove_statsd_backend(&self, name: &str) -> anyhow::Result<()> {
         self.inner.write().remove_statsd_backend(name)
     }
 
@@ -296,9 +156,185 @@ impl Backends {
         self.inner.read().len()
     }
 
-    pub fn provide_statsd_pdu(&self, pdu: statsd_proto::PDU, route: &[config::Route]) {
-        self.inner
-            .read()
-            .provide_statsd(&StatsdSample::PDU(pdu), route)
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn provide_statsd(&self, pdu: &Event, route: &[config::Route]) {
+        self.inner.read().provide_statsd(pdu, route)
+    }
+
+    pub fn provide_statsd_slice(&self, pdu: &[Event], route: &[config::Route]) {
+        let lock = self.inner.read();
+        for p in pdu {
+            lock.provide_statsd(p, route);
+        }
+    }
+
+    pub fn processor_tick(&self, now: std::time::SystemTime) {
+        self.inner.read().processor_tick(now, self);
+    }
+}
+
+pub async fn ticker(tripwire: Tripwire, backends: Backends) {
+    let mut ticker = tokio::time::interval_at(
+        tokio::time::Instant::now(),
+        tokio::time::Duration::from_secs(1),
+    );
+    loop {
+        tokio::select! {
+            _ = tripwire.clone() => { return; }
+            _ = ticker.tick() => {
+                let back = backends.clone();
+                tokio::task::spawn_blocking(move || {
+                    back.processor_tick(std::time::SystemTime::now())
+                }).await.unwrap();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub mod test {
+
+    use super::*;
+    use crate::processors::{self, Processor};
+    use crate::statsd_proto;
+    use crate::statsd_proto::Parsed;
+
+    use std::convert::TryInto;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+
+    struct AssertProc<T>
+    where
+        T: Fn(&Event),
+    {
+        proc: T,
+        count: Arc<AtomicU32>,
+    }
+
+    impl<T: Fn(&Event)> processors::Processor for AssertProc<T> {
+        fn provide_statsd(&self, sample: &Event) -> Option<processors::Output> {
+            (self.proc)(sample);
+            self.count.fetch_add(1, Ordering::Acquire);
+            None
+        }
+    }
+
+    #[test]
+    fn simple_nil_backend() {
+        let scope = crate::stats::Collector::default().scope("prefix");
+        let _backend = Backends::new(scope);
+    }
+
+    fn make_counting_mock() -> (Arc<AtomicU32>, Box<dyn Processor + Send + Sync>) {
+        let counter = Arc::new(AtomicU32::new(0));
+        let proc = Box::new(AssertProc {
+            proc: |_| {},
+            count: counter.clone(),
+        });
+        (counter, proc)
+    }
+
+    fn make_asserting_mock<T: Fn(&Event) + Send + Sync + 'static>(
+        t: T,
+    ) -> (Arc<AtomicU32>, Box<dyn Processor + Send + Sync>) {
+        let counter = Arc::new(AtomicU32::new(0));
+        let proc = Box::new(AssertProc {
+            proc: t,
+            count: counter.clone(),
+        });
+        (counter, proc)
+    }
+
+    fn insert_proc(backend: &Backends, name: &str, proc: Box<dyn Processor + Send + Sync>) {
+        backend
+            .inner
+            .write()
+            .processors
+            .insert(name.to_owned(), proc);
+    }
+
+    #[test]
+    fn processor_tag_test() {
+        // Create the backend
+        let scope = crate::stats::Collector::default().scope("prefix");
+        let backend = Backends::new(scope);
+
+        // Create a mock processor to receive all messages
+        let route_final = vec![config::Route {
+            route_type: config::RouteType::Processor,
+            route_to: "final".to_owned(),
+        }];
+        let (counter, proc) = make_asserting_mock(|sample| {
+            let owned: statsd_proto::Owned = sample.try_into().unwrap();
+            assert_eq!(owned.name(), b"foo.bar.__tags=value");
+        });
+
+        // Insert the assert processors
+        insert_proc(&backend, "final", proc);
+
+        // Create the processor under test
+        let tn = processors::tag::Normalizer::new(&route_final);
+        insert_proc(&backend, "tag", Box::new(tn));
+
+        let pdu =
+            statsd_proto::Pdu::parse(bytes::Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0"))
+                .unwrap();
+        let route = vec![config::Route {
+            route_type: config::RouteType::Processor,
+            route_to: "tag".to_owned(),
+        }];
+        backend.provide_statsd(&Event::Pdu(pdu), &route);
+
+        // Check how many messages the mock has received
+        let actual_count = counter.load(Ordering::Acquire);
+        assert_eq!(1, actual_count);
+    }
+
+    #[test]
+    fn processor_fanout_test() {
+        // Create the backend
+        let scope = crate::stats::Collector::default().scope("prefix");
+        let backend = Backends::new(scope);
+
+        // Create a mock processor to receive all messages, 2x over
+        let route_final = vec![
+            config::Route {
+                route_type: config::RouteType::Processor,
+                route_to: "final1".to_owned(),
+            },
+            config::Route {
+                route_type: config::RouteType::Processor,
+                route_to: "final2".to_owned(),
+            },
+        ];
+        let (counter1, proc1) = make_counting_mock();
+        let (counter2, proc2) = make_counting_mock();
+
+        // Insert the assert processors
+        insert_proc(&backend, "final1", proc1);
+        insert_proc(&backend, "final2", proc2);
+
+        // Create the processor under test
+        let tn = processors::tag::Normalizer::new(&route_final);
+        insert_proc(&backend, "tag", Box::new(tn));
+
+        let pdu =
+            statsd_proto::Pdu::parse(bytes::Bytes::from_static(b"foo.bar:3|c|#tags:value|@1.0"))
+                .unwrap();
+        let route = vec![config::Route {
+            route_type: config::RouteType::Processor,
+            route_to: "tag".to_owned(),
+        }];
+        backend.provide_statsd(&Event::Pdu(pdu), &route);
+
+        // Check how many messages the mock has received
+        let actual_count = counter1.load(Ordering::Acquire);
+        assert_eq!(1, actual_count);
+        let actual_count2 = counter2.load(Ordering::Acquire);
+        assert_eq!(1, actual_count2);
     }
 }

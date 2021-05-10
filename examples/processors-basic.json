@@ -1,0 +1,40 @@
+
+{
+    "admin": {
+        "port": 9001
+    },
+    "processors": {
+        "tag": {
+            "type": "tag_converter",
+            "route": ["processor:cardinality"]
+        },
+        "sampler": {
+            "type": "sampler",
+            "window": 5,
+            "timer_reservoir_size": 2,
+            "route": ["statsd:simple"]
+        },
+        "cardinality": {
+            "type": "cardinality",
+            "route": ["processor:sampler"],
+            "size_limit": 100,
+            "rotate_after_seconds": 10,
+            "buckets": 3
+        }
+    },
+    "statsd": {
+        "servers": {
+            "default": {
+                "bind": "127.0.0.1:8129",
+                "route": ["processor:tag"]
+            }
+        },
+        "backends": {
+            "simple": {
+                "shard_map": [
+                    "127.0.0.1:8122"
+                ]
+            }
+        }
+    }
+}

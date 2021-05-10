@@ -1,10 +1,12 @@
 pub mod admin;
 pub mod backends;
 pub mod config;
+pub mod cuckoofilter;
 pub mod discovery;
-pub mod sampler;
+pub mod processors;
 pub mod shard;
 pub mod stats;
+pub mod statsd_backend;
 pub mod statsd_client;
 pub mod statsd_proto;
 pub mod statsd_server;

@@ -17,7 +17,7 @@ pub const SEP: &str = ":";
 
 #[derive(Clone, Debug)]
 pub struct Collector {
-    // Registry is an Arc<> locked type and thereform is freely cloneable
+    // Registry is an Arc<> locked type and therefor is freely cloneable
     registry: Registry,
     counters: Arc<DashMap<String, Counter>>,
 }
@@ -86,7 +86,7 @@ impl Scope {
     pub fn counter(&self, name: &str) -> anyhow::Result<Counter> {
         let name = format!("{}{}{}", self.scope, SEP, name);
         let counter = Counter::new(name)?;
-        Ok(self.collector.register_counter(counter.clone())?)
+        self.collector.register_counter(counter)
     }
 }
 
@@ -100,7 +100,7 @@ impl Counter {
     fn new(name: String) -> anyhow::Result<Self> {
         let pcounter = prometheus::Counter::new(name.clone(), "a counter")?;
         Ok(Self {
-            name: name,
+            name,
             counter: pcounter,
         })
     }
@@ -132,8 +132,8 @@ pub mod test {
         ctr1.inc();
         let ctr2 = scope.counter("counter").unwrap();
         // Ensure we have the same counter object
-        assert_eq!(ctr2.get(), 1 as f64);
+        assert_eq!(ctr2.get(), 1_f64);
         ctr2.inc();
-        assert_eq!(ctr1.get(), 2 as f64);
+        assert_eq!(ctr1.get(), 2_f64);
     }
 }

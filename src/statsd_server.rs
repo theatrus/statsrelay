@@ -21,7 +21,7 @@ use crate::backends::Backends;
 use crate::config;
 use crate::config::StatsdServerConfig;
 use crate::stats;
-use crate::statsd_proto::PDU;
+use crate::statsd_proto::{Event, Pdu};
 
 const TCP_READ_TIMEOUT: Duration = Duration::from_secs(62);
 const READ_BUFFER: usize = 8192;
@@ -62,25 +62,24 @@ impl UdpServer {
         info!("statsd udp server running on {}", bind);
         let gate = self.shutdown_gate.clone();
         std::thread::spawn(move || {
+            info!("started udp reader thread");
+            let mut buf = BytesMut::with_capacity(65535);
             loop {
                 if gate.load(Relaxed) {
                     break;
                 }
-                let mut buf = BytesMut::with_capacity(65535);
-
-                match socket.recv_from(&mut buf[..]) {
+                buf.resize(65535, 0_u8);
+                match socket.recv_from(buf.as_mut()) {
                     Ok((size, _remote)) => {
+                        buf.truncate(size);
                         incoming_bytes.inc_by(size as f64);
-                        let mut r = process_buffer_newlines(&mut buf);
+                        let r = process_buffer_newlines(&mut buf);
                         processed_lines.inc_by(r.len() as f64);
-                        for p in r.drain(..) {
-                            backends.provide_statsd_pdu(p, &route);
+                        backends.provide_statsd_slice(&r, &route);
+
+                        if let Ok(p) = Pdu::parse(buf.clone().freeze()) {
+                            backends.provide_statsd(&Event::Pdu(p), &route);
                         }
-                        match PDU::parse(buf.clone().freeze()) {
-                            Ok(p) => backends.provide_statsd_pdu(p, &route),
-                            Err(_) => (),
-                        }
-                        buf.clear();
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => (),
                     Err(e) => warn!("udp receiver error {:?}", e),
@@ -91,8 +90,8 @@ impl UdpServer {
     }
 }
 
-fn process_buffer_newlines(buf: &mut BytesMut) -> Vec<PDU> {
-    let mut ret: Vec<PDU> = Vec::new();
+fn process_buffer_newlines(buf: &mut BytesMut) -> Vec<Event> {
+    let mut ret: Vec<Event> = Vec::new();
     loop {
         match memchr(b'\n', &buf) {
             None => break,
@@ -108,13 +107,13 @@ fn process_buffer_newlines(buf: &mut BytesMut) -> Vec<PDU> {
                     // Consume a line consisting of just the word status, and do not produce a PDU
                     continue;
                 }
-                if let Ok(pdu) = PDU::parse(frozen) {
-                    ret.push(pdu);
+                if let Ok(pdu) = Pdu::parse(frozen) {
+                    ret.push(Event::Pdu(pdu));
                 }
             }
         };
     }
-    return ret;
+    ret
 }
 
 async fn client_handler<T>(
@@ -124,17 +123,20 @@ async fn client_handler<T>(
     mut socket: T,
     backends: Backends,
     route: Vec<config::Route>,
+    config: config::StatsdServerConfig,
 ) where
     T: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut buf = BytesMut::with_capacity(READ_BUFFER);
     let incoming_bytes = stats.counter("incoming_bytes").unwrap();
     let disconnects = stats.counter("disconnects").unwrap();
     let processed_lines = stats.counter("lines").unwrap();
 
+    let read_buffer = config.read_buffer.unwrap_or(READ_BUFFER);
+    let mut buf = BytesMut::with_capacity(read_buffer);
+
     loop {
-        if buf.remaining_mut() < READ_BUFFER {
-            buf.reserve(READ_BUFFER);
+        if buf.remaining_mut() < read_buffer {
+            buf.reserve(read_buffer);
         }
         let result = select! {
             r = timeout(TCP_READ_TIMEOUT, socket.read_buf(&mut buf)) => {
@@ -153,19 +155,13 @@ async fn client_handler<T>(
                 break;
             }
             Ok(bytes) if bytes == 0 => {
-                let mut r = process_buffer_newlines(&mut buf);
+                let r = process_buffer_newlines(&mut buf);
                 processed_lines.inc_by(r.len() as f64);
 
-                for p in r.drain(..) {
-                    backends.provide_statsd_pdu(p, &route);
-                }
+                backends.provide_statsd_slice(&r, &route);
                 let remaining = buf.clone().freeze();
-                match PDU::parse(remaining) {
-                    Ok(p) => {
-                        backends.provide_statsd_pdu(p, &route);
-                        ()
-                    }
-                    Err(_) => (),
+                if let Ok(p) = Pdu::parse(remaining) {
+                    backends.provide_statsd(&Event::Pdu(p), &route);
                 };
                 debug!("remaining {:?}", buf);
                 debug!("closing reader {}", peer);
@@ -174,11 +170,9 @@ async fn client_handler<T>(
             Ok(bytes) => {
                 incoming_bytes.inc_by(bytes as f64);
 
-                let mut r = process_buffer_newlines(&mut buf);
+                let r = process_buffer_newlines(&mut buf);
                 processed_lines.inc_by(r.len() as f64);
-                for p in r.drain(..) {
-                    backends.provide_statsd_pdu(p, &route);
-                }
+                backends.provide_statsd_slice(&r, &route);
             }
             Err(e) if e.kind() == ErrorKind::Other => {
                 // Ignoring the results of the write call here
@@ -246,6 +240,7 @@ pub async fn run(
     let accept_failures_unix = stats.counter("accept_failures_unix").unwrap();
 
     let routes = config.route.clone();
+    let server_config = config.clone();
     async move {
         loop {
             select! {
@@ -260,7 +255,7 @@ pub async fn run(
                             let peer_addr = format!("{:?}", socket.peer_addr());
                             debug!("accepted unix connection from {:?}", socket.peer_addr());
                             accept_connections_unix.inc();
-                            tokio::spawn(client_handler(stats.scope("connections_unix"), peer_addr, tripwire.clone(), socket, backends.clone(), routes.clone()));
+                            tokio::spawn(client_handler(stats.scope("connections_unix"), peer_addr, tripwire.clone(), socket, backends.clone(), routes.clone(), server_config.clone()));
                         }
                         Err(err) => {
                             accept_failures_unix.inc();
@@ -275,7 +270,7 @@ pub async fn run(
                             let peer_addr = format!("{:?}", socket.peer_addr());
                             debug!("accepted connection from {:?}", socket.peer_addr());
                             accept_connections.inc();
-                            tokio::spawn(client_handler(stats.scope("connections"), peer_addr, tripwire.clone(), socket, backends.clone(), routes.clone()));
+                            tokio::spawn(client_handler(stats.scope("connections"), peer_addr, tripwire.clone(), socket, backends.clone(), routes.clone(), server_config.clone()));
                         }
                         Err(err) => {
                             accept_failures.inc();
@@ -308,7 +303,7 @@ pub mod test {
         // Validate we don't consume non-newlines
         b.put_slice(b"hello");
         let r = process_buffer_newlines(&mut b);
-        assert!(r.len() == 0);
+        assert!(r.is_empty());
         assert!(b.split().as_ref() == b"hello");
     }
 
@@ -330,8 +325,9 @@ pub mod test {
         b.put_slice(b"hello:1|c\r\nhello:1|c\nhello2");
         let r = process_buffer_newlines(&mut b);
         for w in r {
-            assert!(w.pdu_type() == b"c");
-            assert!(w.name() == b"hello");
+            let pdu: Pdu = w.into();
+            assert!(pdu.pdu_type() == b"c");
+            assert!(pdu.name() == b"hello");
             found += 1
         }
         assert_eq!(2, found);
@@ -346,8 +342,9 @@ pub mod test {
         b.put_slice(b"status\r\nhello:1|c\nhello2");
         let r = process_buffer_newlines(&mut b);
         for w in r {
-            assert!(w.pdu_type() == b"c");
-            assert!(w.name() == b"hello");
+            let pdu: Pdu = w.into();
+            assert!(pdu.pdu_type() == b"c");
+            assert!(pdu.name() == b"hello");
             found += 1
         }
         assert_eq!(1, found);

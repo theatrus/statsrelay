@@ -9,6 +9,7 @@ use futures::{stream::FuturesUnordered, FutureExt};
 use stream_cancel::Tripwire;
 use structopt::StructOpt;
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 use tokio::runtime;
@@ -18,12 +19,13 @@ use tokio::signal::unix::{signal, SignalKind};
 use env_logger::Env;
 use log::{debug, error, info};
 
-use statsrelay::backends;
 use statsrelay::config;
 use statsrelay::discovery;
+use statsrelay::processors;
 use statsrelay::stats;
 use statsrelay::statsd_server;
 use statsrelay::{admin, config::Config};
+use statsrelay::{backends, stats::Scope};
 
 #[derive(StructOpt, Debug)]
 struct Options {
@@ -35,15 +37,24 @@ struct Options {
 
     #[structopt(short = "t", long = "--threaded")]
     pub threaded: bool,
+
+    #[structopt(long = "--version")]
+    pub version: bool,
 }
 
 /// The main server invocation, for a given configuration, options and stats
 /// scope. The server will spawn any listeners, initialize a backend
 /// configuration update loop, as well as register signal handlers.
 async fn server(scope: stats::Scope, config: Config, opts: Options) {
+    let backend_reloads = scope.counter("backend_reloads").unwrap();
     let backends = backends::Backends::new(scope.scope("backends"));
 
-    let backend_reloads = scope.counter("backend_reloads").unwrap();
+    // Load processors
+    if let Some(processors) = config.processors.as_ref() {
+        load_processors(scope.scope("processors"), &backends, processors)
+            .await
+            .unwrap();
+    }
 
     let (sender, tripwire) = Tripwire::new();
     let mut run: FuturesUnordered<_> = config
@@ -86,6 +97,7 @@ async fn server(scope: stats::Scope, config: Config, opts: Options) {
     //
     // SIGHUP will attempt to reload backend configurations as well as any
     // discovery changes.
+    let discovery_backends = backends.clone();
     tokio::spawn(async move {
         let dconfig = config.discovery.unwrap_or_default();
         let discovery_cache = discovery::Cache::new();
@@ -94,9 +106,10 @@ async fn server(scope: stats::Scope, config: Config, opts: Options) {
         loop {
             info!("loading configuration and updating backends");
             backend_reloads.inc();
-            let config = load_backend_configs(&discovery_cache, &backends, opts.config.as_ref())
-                .await
-                .unwrap();
+            let config =
+                load_backend_configs(&discovery_cache, &discovery_backends, opts.config.as_ref())
+                    .await
+                    .unwrap();
             let dconfig = config.discovery.unwrap_or_default();
 
             tokio::select! {
@@ -112,15 +125,30 @@ async fn server(scope: stats::Scope, config: Config, opts: Options) {
         }
     });
 
+    // Start processing processor tickers
+    let ticker_backends = backends.clone();
+    tokio::spawn(backends::ticker(tripwire.clone(), ticker_backends));
+
+    // Wait for the server to finish
     while let Some(name) = run.next().await {
         debug!("server {} exited", name)
     }
+    debug!("forcing processor tick to flush");
+    backends.processor_tick(std::time::SystemTime::now());
 }
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     let opts = Options::from_args();
 
+    if opts.version {
+        println!(
+            "statsrelay - {} - {}",
+            statsrelay::built_info::PKG_VERSION,
+            statsrelay::built_info::GIT_COMMIT_HASH.unwrap_or("unknown")
+        );
+        return Ok(());
+    }
     info!(
         "statsrelay loading - {} - {}",
         statsrelay::built_info::PKG_VERSION,
@@ -161,6 +189,36 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Load processors from a given config structure and pack them into the given
+/// backend set. Currently processors can't be reloaded at runtime.
+async fn load_processors(
+    scope: Scope,
+    backends: &backends::Backends,
+    processors: &HashMap<String, config::Processor>,
+) -> anyhow::Result<()> {
+    for (name, cp) in processors.iter() {
+        let proc: Box<dyn processors::Processor + Send + Sync> = match cp {
+            config::Processor::TagConverter(tc) => {
+                info!("processor tag_converter: {:?}", tc);
+                Box::new(processors::tag::Normalizer::new(tc.route.as_ref()))
+            }
+            config::Processor::Sampler(sampler) => {
+                info!("processor sampler: {:?}", sampler);
+                Box::new(processors::sampler::Sampler::new(sampler)?)
+            }
+            config::Processor::Cardinality(cardinality) => {
+                info!("processor cardinality: {:?}", cardinality);
+                Box::new(processors::cardinality::Cardinality::new(
+                    scope.scope(name),
+                    cardinality,
+                ))
+            }
+        };
+        backends.replace_processor(name.as_str(), proc)?;
+    }
+    Ok(())
+}
+
 async fn load_backend_configs(
     discovery_cache: &discovery::Cache,
     backends: &backends::Backends,
@@ -190,7 +248,7 @@ async fn load_backend_configs(
         }
     }
     let existing_backends = backends.backend_names();
-    let config_backends: HashSet<String> = duplicate.keys().map(|s| s.clone()).collect();
+    let config_backends: HashSet<String> = duplicate.keys().cloned().collect();
     let difference = existing_backends.difference(&config_backends);
     for remove in difference {
         if let Err(e) = backends.remove_statsd_backend(remove) {
