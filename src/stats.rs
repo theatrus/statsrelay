@@ -20,6 +20,7 @@ pub struct Collector {
     // Registry is an Arc<> locked type and therefor is freely cloneable
     registry: Registry,
     counters: Arc<DashMap<String, Counter>>,
+    gauges: Arc<DashMap<String, Gauge>>,
 }
 
 impl Default for Collector {
@@ -27,6 +28,7 @@ impl Default for Collector {
         Collector {
             registry: Registry::new(),
             counters: Arc::new(DashMap::new()),
+            gauges: Arc::new(DashMap::new()),
         }
     }
 }
@@ -65,6 +67,18 @@ impl Collector {
 
         Ok(counter)
     }
+
+    fn register_gauge(&self, g: Gauge) -> anyhow::Result<Gauge> {
+        let gauge = match self.gauges.get(&g.name) {
+            Some(gauge) => gauge.clone(),
+            None => {
+                self.registry.register(Box::new(g.clone().gauge))?;
+                self.gauges.insert(g.name.clone(), g.clone());
+                g
+            }
+        };
+        Ok(gauge)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -87,6 +101,38 @@ impl Scope {
         let name = format!("{}{}{}", self.scope, SEP, name);
         let counter = Counter::new(name)?;
         self.collector.register_counter(counter)
+    }
+
+    /// Create a new gauge with the given scope, or return the existing gauge
+    /// with the same name
+    pub fn gauge(&self, name: &str) -> anyhow::Result<Gauge> {
+        let name = format!("{}{}{}", self.scope, SEP, name);
+        let gauge = Gauge::new(name.as_str())?;
+        self.collector.register_gauge(gauge)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Gauge {
+    name: String,
+    gauge: prometheus::Gauge,
+}
+
+impl Gauge {
+    fn new(name: &str) -> anyhow::Result<Self> {
+        let pg = prometheus::Gauge::new(name.to_owned(), "a gauge")?;
+        Ok(Self {
+            name: name.to_owned(),
+            gauge: pg,
+        })
+    }
+
+    pub fn set(&self, value: f64) {
+        self.gauge.set(value)
+    }
+
+    pub fn get(&self) -> f64 {
+        self.gauge.get()
     }
 }
 
@@ -135,5 +181,18 @@ pub mod test {
         assert_eq!(ctr2.get(), 1_f64);
         ctr2.inc();
         assert_eq!(ctr1.get(), 2_f64);
+    }
+
+    #[test]
+    pub fn test_gauge() {
+        let collector = Collector::default();
+        let scope = collector.scope("prefix");
+        let ctr1 = scope.gauge("gauge").unwrap();
+        ctr1.set(12_f64);
+        let ctr2 = scope.gauge("gauge").unwrap();
+        // Ensure we have the same gauge object
+        assert_eq!(ctr2.get(), 12_f64);
+        ctr2.set(13_f64);
+        assert_eq!(ctr1.get(), 13_f64);
     }
 }
