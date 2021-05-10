@@ -1,11 +1,12 @@
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime};
+use std::convert::TryInto;
 
 use super::super::config;
 use super::super::statsd_proto::Event;
 use super::{Output, Processor};
-use crate::backends::Backends;
-use crate::stats::{Counter, Scope};
+use crate::{backends::Backends, statsd_proto::{Owned, Parsed}};
+use crate::stats::{Counter, Gauge, Scope};
 
 use crate::cuckoofilter::{self, CuckooFilter};
 use ahash::AHasher;
@@ -96,17 +97,21 @@ pub struct Cardinality {
     filter: Mutex<MultiCuckoo<AHasher>>,
     limit: usize,
     counter_flagged_metrics: Counter,
+    gauge_metric_hwm: Gauge,
 }
 
 impl Cardinality {
     pub fn new(scope: Scope, from_config: &config::processor::Cardinality) -> Self {
         let window = Duration::from_secs(from_config.rotate_after_seconds);
-        let flagged_metrics = scope.counter("flagged_metrics").unwrap();
+        // Record a limit gauge for visibility
+        let limit_gauge = scope.gauge("limit").unwrap();
+        limit_gauge.set(from_config.size_limit as f64);
         Cardinality {
             route: from_config.route.clone(),
             filter: Mutex::new(MultiCuckoo::new(from_config.buckets, &window)),
             limit: from_config.size_limit as usize,
-            counter_flagged_metrics: flagged_metrics,
+            counter_flagged_metrics: scope.counter("flagged_metrics").unwrap(),
+            gauge_metric_hwm: scope.gauge("count_hwm").unwrap(),
         }
     }
 
@@ -119,9 +124,14 @@ impl Processor for Cardinality {
     fn provide_statsd(&self, sample: &Event) -> Option<Output> {
         let mut filter = self.filter.lock();
         let contains = filter.contains(sample);
-        if !contains && filter.len() > self.limit {
+        let len = filter.len();
+        self.gauge_metric_hwm.set(len as f64);
+
+        if !contains && len > self.limit {
             if (self.counter_flagged_metrics.get() as u64) % 1000 == 0 {
-                warn!("metric flagged for cardinality limits: {:?}", sample);
+                // Enforce parsing of the metric to give a clean debug log
+                let owned: Owned = sample.try_into().ok()?;
+                warn!("metric flagged for cardinality limits: {}", owned.id());
             }
             self.counter_flagged_metrics.inc();
             return None;
@@ -217,5 +227,15 @@ pub mod test {
                 name
             );
         }
+        assert!(
+            filter.gauge_metric_hwm.get() == 101_f64,
+            "metric high water mark was set, hwm {}",
+            filter.gauge_metric_hwm.get()
+        );
+        assert!(
+            filter.counter_flagged_metrics.get() > 298_f64,
+            "flagged metric counter was increased, count {}",
+            filter.counter_flagged_metrics.get()
+        );
     }
 }

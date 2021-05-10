@@ -6,6 +6,7 @@ use thiserror::Error;
 use std::{
     cmp::Ordering,
     convert::{TryFrom, TryInto},
+    fmt,
     hash::Hash,
     hash::Hasher,
     vec,
@@ -17,6 +18,24 @@ pub struct Id {
     pub name: Vec<u8>,
     pub mtype: Type,
     pub tags: Vec<Tag>,
+}
+
+impl fmt::Display for Id {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}{}",
+            std::str::from_utf8(self.name.as_ref()).map_err(|_| fmt::Error {})?,
+            self.mtype,
+        )?;
+        f.write_str("{")?;
+        let mut sep = "";
+        for tag in self.tags.iter() {
+            write!(f, "{}{}", sep, tag)?;
+            sep = ", ";
+        }
+        f.write_str("}")
+    }
 }
 
 impl Hash for Id {
@@ -98,6 +117,24 @@ impl PartialEq for Type {
     }
 }
 
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use Type::*;
+
+        write!(
+            f,
+            "({})",
+            match self {
+                Counter => "counter",
+                Timer => "timer",
+                Gauge => "gauge",
+                DirectGauge => "directgauge",
+                Set => "set",
+            }
+        )
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum ParseError {
     #[error("invalid parsed value")]
@@ -123,6 +160,17 @@ pub enum ParseError {
 pub struct Tag {
     pub name: Vec<u8>,
     pub value: Vec<u8>,
+}
+
+impl fmt::Display for Tag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "[{}={}]",
+            std::str::from_utf8(self.name.as_ref()).map_err(|_| fmt::Error {})?,
+            std::str::from_utf8(self.value.as_ref()).map_err(|_| fmt::Error {})?
+        )
+    }
 }
 
 impl Hash for Tag {
@@ -297,7 +345,7 @@ impl TryFrom<&Pdu> for Owned {
 
     fn try_from(pdu: &Pdu) -> Result<Self, Self::Error> {
         let value = match lexical::parse::<f64, _>(pdu.value()) {
-            Ok(v) if v.is_finite()=> v,
+            Ok(v) if v.is_finite() => v,
             _ => return Err(ParseError::InvalidValue),
         };
         let sample_rate = pdu
@@ -747,6 +795,32 @@ pub mod test {
             .unwrap();
 
         assert_eq!(map.get(&owned.id), Some(&true));
+    }
+
+    #[test]
+    fn test_fmt_id() {
+        let id1 = Id {
+            name: b"hello".to_vec(),
+            mtype: Type::Counter,
+            tags: vec![],
+        };
+        let fmt1 = format!("{}", id1);
+        assert!("hello(counter){}" == fmt1);
+
+        let id2 = Id {
+            name: b"hello".to_vec(),
+            mtype: Type::Counter,
+            tags: vec![Tag {
+                name: b"a".to_vec(),
+                value: b"b".to_vec(),
+            }],
+        };
+        let fmt2 = format!("{}", id2);
+        assert!(
+            "hello(counter){[a=b]}" == fmt2,
+            "invalid format output, got {}",
+            fmt2
+        );
     }
 
     pub mod convert {
