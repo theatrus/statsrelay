@@ -31,7 +31,7 @@ where
 {
     fn new(valid_until: SystemTime) -> Self {
         TimeBoundedCuckoo {
-            filter: CuckooFilter::with_capacity((1 << 21) - 1),
+            filter: CuckooFilter::with_capacity((1 << 22) - 1),
             valid_until,
         }
     }
@@ -75,7 +75,7 @@ where
         let results: Result<Vec<_>, _> = self
             .filters
             .iter_mut()
-            .map(|filter| filter.filter.add(data))
+            .map(|filter| filter.filter.test_and_add(data))
             .collect();
         results.map(|_| ())
     }
@@ -223,6 +223,8 @@ pub mod test {
         for name in &names[0..101] {
             assert!(filter.provide_statsd(name).is_some());
         }
+        let len = filter.filter.lock().len();
+        assert!(len == 101, "length isn't as expected {}", len);
         for name in &names[101..] {
             assert!(
                 filter.provide_statsd(name).is_none(),
