@@ -1,12 +1,15 @@
+use std::convert::TryInto;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, SystemTime};
-use std::convert::TryInto;
 
 use super::super::config;
 use super::super::statsd_proto::Event;
 use super::{Output, Processor};
-use crate::{backends::Backends, statsd_proto::{Owned, Parsed}};
 use crate::stats::{Counter, Gauge, Scope};
+use crate::{
+    backends::Backends,
+    statsd_proto::{Owned, Parsed},
+};
 
 use crate::cuckoofilter::{self, CuckooFilter};
 use ahash::AHasher;
