@@ -4,6 +4,7 @@ use crate::statsd_proto::Event;
 use smallvec::SmallVec;
 
 pub mod cardinality;
+pub mod regex_filter;
 pub mod sampler;
 pub mod tag;
 

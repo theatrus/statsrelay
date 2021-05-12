@@ -213,6 +213,13 @@ async fn load_processors(
                     cardinality,
                 ))
             }
+            config::Processor::RegexFilter(regex) => {
+                info!("processor regex_filter: {:?}", regex);
+                Box::new(processors::regex_filter::RegexFilter::new(
+                    scope.scope(name),
+                    regex,
+                )?)
+            }
         };
         backends.replace_processor(name.as_str(), proc)?;
     }

@@ -100,6 +100,13 @@ pub mod processor {
         pub buckets: usize,
         pub route: Vec<Route>,
     }
+
+    #[derive(Serialize, Deserialize, Debug, Clone)]
+    pub struct RegexFilter {
+        pub remove: Option<Vec<String>>,
+        pub allow: Option<Vec<String>>,
+        pub route: Vec<Route>,
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -108,6 +115,7 @@ pub enum Processor {
     Sampler(processor::Sampler),
     TagConverter(processor::TagConverter),
     Cardinality(processor::Cardinality),
+    RegexFilter(processor::RegexFilter),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -241,6 +249,7 @@ fn check_config_route(config: &Config) -> Result<(), Error> {
             Processor::Sampler(sampler) => check_routes(config, sampler.route.as_ref()),
             Processor::TagConverter(tc) => check_routes(config, tc.route.as_ref()),
             Processor::Cardinality(c) => check_routes(config, c.route.as_ref()),
+            Processor::RegexFilter(filter) => check_routes(config, filter.route.as_ref()),
         })
         .collect();
     routes.map(|_| ())
@@ -314,6 +323,11 @@ pub mod test {
                 "tag1": {
                     "type": "tag_converter",
                     "route": ["statsd:test1"]
+                },
+                "regex": {
+                    "type": "regex_filter",
+                    "allow": [".*"],
+                    "route": ["statsd:test1"]
                 }
             },
             "discovery": {
@@ -353,7 +367,7 @@ pub mod test {
             "127.0.0.1:BIND_STATSD_PORT".to_string()
         );
         // Check processors
-        assert_eq!(1, config.clone().processors.unwrap_or_default().len());
+        assert_eq!(2, config.clone().processors.unwrap_or_default().len());
         // Check discovery
         let discovery = config.discovery.unwrap();
         assert_eq!(2, discovery.sources.len());
