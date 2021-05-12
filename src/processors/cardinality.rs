@@ -75,8 +75,7 @@ where
         let results: Result<Vec<_>, _> = self
             .filters
             .iter_mut()
-            .filter(|filter| !filter.filter.contains(data))
-            .map(|filter| filter.filter.add(data))
+            .map(|filter| filter.filter.test_and_add(data))
             .collect();
         results.map(|_| ())
     }
