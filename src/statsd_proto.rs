@@ -437,8 +437,7 @@ pub mod convert {
     {
         input.into_iter().map({
             |character| match character {
-                b'.' => b'_',
-                b'=' => b'_',
+                b':' | b'.' | b'=' => b'_',
                 _ => character,
             }
         })
@@ -857,13 +856,13 @@ pub mod test {
         #[test]
         fn convert_tags_dirty() {
             let pdu = Pdu::parse(Bytes::from_static(
-                b"foo.bar:3|c|#tags.extra.name:value=iscool,atag:avalue|@1.0",
+                b"foo.bar:3|c|#tags.extra.name:value=iscool,atag:avalue:withanextracolon|@1.0",
             ))
             .unwrap();
             let parsed = (&pdu).try_into().unwrap();
             let converted = super::super::convert::to_inline_tags(parsed);
             assert_eq!(
-                b"foo.bar.__atag=avalue.__tags_extra_name=value_iscool".to_vec(),
+                b"foo.bar.__atag=avalue_withanextracolon.__tags_extra_name=value_iscool".to_vec(),
                 converted.id.name
             );
         }
