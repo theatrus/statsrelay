@@ -430,6 +430,20 @@ pub mod convert {
     use super::*;
     /// Convert from external tags to internal tags. Does not check for
     /// collisions of existing inline tags with the newly generated inline tags.
+
+    fn inline_sanitize<T>(input: T) -> impl Iterator<Item = u8>
+    where
+        T: IntoIterator<Item = u8>,
+    {
+        input.into_iter().map({
+            |character| match character {
+                b'.' => b'_',
+                b'=' => b'_',
+                _ => character,
+            }
+        })
+    }
+
     pub fn to_inline_tags(mut input: Owned) -> Owned {
         if input.id.tags.is_empty() {
             return input;
@@ -440,9 +454,9 @@ pub mod convert {
         name.reserve(input.id.tags.len() * 64);
         for tag in input.id.tags.drain(..) {
             name.extend_from_slice(b".__");
-            name.extend(tag.name);
+            name.extend(inline_sanitize(tag.name));
             name.extend_from_slice(b"=");
-            name.extend(tag.value);
+            name.extend(inline_sanitize(tag.value));
         }
         let id = Id {
             name,
@@ -836,6 +850,20 @@ pub mod test {
             let converted = super::super::convert::to_inline_tags(parsed);
             assert_eq!(
                 b"foo.bar.__atag=avalue.__tags=value".to_vec(),
+                converted.id.name
+            );
+        }
+
+        #[test]
+        fn convert_tags_dirty() {
+            let pdu = Pdu::parse(Bytes::from_static(
+                b"foo.bar:3|c|#tags.extra.name:value=iscool,atag:avalue|@1.0",
+            ))
+            .unwrap();
+            let parsed = (&pdu).try_into().unwrap();
+            let converted = super::super::convert::to_inline_tags(parsed);
+            assert_eq!(
+                b"foo.bar.__atag=avalue.__tags_extra_name=value_iscool".to_vec(),
                 converted.id.name
             );
         }
