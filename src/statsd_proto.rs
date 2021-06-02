@@ -629,7 +629,7 @@ impl Pdu {
                     tags_index = index.map(|v| (v + 2, length));
                     sample_rate_index = sample_rate_index.map(|(v, _l)| (v, index.unwrap()));
                 }
-                _ => return Err(ParseError::UnsupportedExtensionField),
+                _ => (),
             }
             scan_index = index.unwrap() + 1;
         }
@@ -776,6 +776,23 @@ pub mod test {
             parsed.id.tags[0],
             Tag {
                 name: b"tags".to_vec(),
+                value: b"value".to_vec()
+            }
+        );
+    }
+
+    #[test]
+    fn parsed_tags_complex() {
+        let pdu = Pdu::parse(Bytes::from_static(b"foo.bar:3|c|#tags|tagpt2:value|@1.0")).unwrap();
+        let parsed: Owned = (&pdu).try_into().unwrap();
+        assert_eq!(parsed.value, 3.0);
+        assert_eq!(parsed.id.name, b"foo.bar");
+        assert_eq!(parsed.id.mtype, Type::Counter);
+        assert_eq!(parsed.sample_rate, Some(1.0));
+        assert_eq!(
+            parsed.id.tags[0],
+            Tag {
+                name: b"tags|tagpt2".to_vec(),
                 value: b"value".to_vec()
             }
         );
