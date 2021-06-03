@@ -161,7 +161,7 @@ async fn client_sender(
                 }
                 Some(c) => c,
             };
-            // Keep on writing the buffer until success
+            // Write the buffer until success
             let result = connect.write_buf(&mut buf).await;
             match result {
                 Ok(0) if !buf.is_empty() => {
@@ -171,11 +171,9 @@ async fn client_sender(
                     connections_aborted.inc();
                     continue;
                 }
-                Ok(0) if buf.is_empty() => {
+                Ok(bytes) if buf.is_empty() => {
+                    bytes_sent.inc_by(bytes as f64);
                     drop(buf);
-                    break;
-                }
-                Ok(_) if !buf.is_empty() => {
                     break;
                 }
                 Ok(bytes) => {
