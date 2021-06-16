@@ -47,6 +47,7 @@ struct Options {
 /// configuration update loop, as well as register signal handlers.
 async fn server(scope: stats::Scope, config: Config, opts: Options) {
     let backend_reloads = scope.counter("backend_reloads").unwrap();
+    let config_load_failures = scope.counter("backend_reloads_failure").unwrap();
     let backends = backends::Backends::new(scope.scope("backends"));
 
     // Load processors
@@ -119,6 +120,7 @@ async fn server(scope: stats::Scope, config: Config, opts: Options) {
                     config
                 }
                 Err(e) => {
+                    config_load_failures.inc();
                     error!("error reloading configuration from disk, using original configuration: {:?}", e);
                     last_config.clone()
                 }
