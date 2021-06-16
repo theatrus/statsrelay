@@ -47,6 +47,7 @@ struct Options {
 /// configuration update loop, as well as register signal handlers.
 async fn server(scope: stats::Scope, config: Config, opts: Options) {
     let backend_reloads = scope.counter("backend_reloads").unwrap();
+    let config_load_failures = scope.counter("backend_reloads_failure").unwrap();
     let backends = backends::Backends::new(scope.scope("backends"));
 
     // Load processors
@@ -99,6 +100,7 @@ async fn server(scope: stats::Scope, config: Config, opts: Options) {
     // discovery changes.
     let discovery_backends = backends.clone();
     tokio::spawn(async move {
+        let mut last_config = config.clone();
         let dconfig = config.discovery.unwrap_or_default();
         let discovery_cache = discovery::Cache::new();
         let mut discovery_stream =
@@ -106,10 +108,23 @@ async fn server(scope: stats::Scope, config: Config, opts: Options) {
         loop {
             info!("loading configuration and updating backends");
             backend_reloads.inc();
-            let config =
-                load_backend_configs(&discovery_cache, &discovery_backends, opts.config.as_ref())
-                    .await
-                    .unwrap();
+            let config = match load_backend_configs(
+                &discovery_cache,
+                &discovery_backends,
+                opts.config.as_ref(),
+            )
+            .await
+            {
+                Ok(config) => {
+                    last_config = config.clone();
+                    config
+                }
+                Err(e) => {
+                    config_load_failures.inc();
+                    error!("error reloading configuration from disk, using original configuration: {:?}", e);
+                    last_config.clone()
+                }
+            };
             let dconfig = config.discovery.unwrap_or_default();
 
             tokio::select! {
